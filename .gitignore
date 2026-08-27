@@ -1,2 +1,9 @@
 /target
 native_edge_queue.db
+
+.venv/
+*.egg-info/
+target/
+*.dylib
+*.so
+*.dll
