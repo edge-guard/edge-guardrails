@@ -1,23 +1,10 @@
-from setuptools import setup
-import sys
-import shutil
-import os
+from setuptools import setup, find_packages
 
 setup(
-    name="edgeguard-sdk",
+    name="edgeguard",
     version="0.2.0",
-    description="Sub-microsecond on-device AI guardrails engine for local LLMs and Edge AI",
-    author="EdgeGuard Team",
-    py_modules=["edgeguard"],
-    install_requires=[
-        "pyyaml>=6.0",
-    ],
+    packages=find_packages(),
+    package_data={"edgeguard": ["*.dylib", "*.so", "*.dll", "*.yaml"]},
     include_package_data=True,
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Rust",
-        "Topic :: Security",
-        "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    ],
-    python_requires=">=3.8",
+    install_requires=["pyyaml>=6.0"],
 )

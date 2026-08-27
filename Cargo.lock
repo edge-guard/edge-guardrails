@@ -116,6 +116,7 @@ dependencies = [
 name = "edge_native_sdk"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "cc",
  "lazy_static",
  "regex",

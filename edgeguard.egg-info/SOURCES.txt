@@ -1,0 +1,10 @@
+README.md
+setup.py
+edgeguard/__init__.py
+edgeguard/libedge_native_sdk.dylib
+edgeguard/policy.yaml
+edgeguard.egg-info/PKG-INFO
+edgeguard.egg-info/SOURCES.txt
+edgeguard.egg-info/dependency_links.txt
+edgeguard.egg-info/requires.txt
+edgeguard.egg-info/top_level.txt

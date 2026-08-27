@@ -17,6 +17,8 @@ class EdgeGuard:
         2: "Financial - Credit Card Detected",
         3: "Secrets - API Key / Token Detected",
         4: "Security - Prompt Injection Detected",
+        5: "Secrets - High-Entropy Secret Detected",
+        6: "Security - Base64 Encoded Injection Detected",
         -1: "Engine Error / Unhandled Panic"
     }
 
@@ -66,12 +68,11 @@ class EdgeGuard:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Policy file not found: {file_path}")
 
-        # Update Python-side descriptions
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 if data and "rules" in data:
-                    self.reason_map = {0: "Safe", -1: "Engine Error / Unhandled Panic"}
+                    self.reason_map = dict(self._DEFAULT_REASON_MAP)
                     for r in data["rules"]:
                         self.reason_map[r["id"]] = r.get("name", f"Rule #{r['id']}")
         except Exception as e:

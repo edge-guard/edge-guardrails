@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: edgeguard
+Version: 0.2.0
+Requires-Dist: pyyaml>=6.0
+Dynamic: requires-dist

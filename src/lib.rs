@@ -5,6 +5,7 @@ use std::panic::catch_unwind;
 use std::sync::{OnceLock, RwLock};
 use regex::Regex;
 use serde::Deserialize;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
 #[repr(C)]
 pub struct ScanResult {
@@ -36,6 +37,7 @@ pub struct CompiledPolicy {
 }
 
 static POLICY_STORE: OnceLock<RwLock<CompiledPolicy>> = OnceLock::new();
+static BASE64_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn get_default_policy() -> CompiledPolicy {
     let default_rules = vec![
@@ -59,6 +61,58 @@ fn get_policy_store() -> &'static RwLock<CompiledPolicy> {
     POLICY_STORE.get_or_init(|| RwLock::new(get_default_policy()))
 }
 
+fn calculate_shannon_entropy(s: &str) -> f64 {
+    let len = s.len() as f64;
+    if len == 0.0 {
+        return 0.0;
+    }
+
+    let mut counts = [0usize; 256];
+    for &b in s.as_bytes() {
+        counts[b as usize] += 1;
+    }
+
+    let mut entropy = 0.0;
+    for &count in &counts {
+        if count > 0 {
+            let p = count as f64 / len;
+            entropy -= p * p.log2();
+        }
+    }
+    entropy
+}
+
+fn check_high_entropy_secrets(text: &str) -> bool {
+    // Check tokens longer than 20 characters for high Shannon entropy (> 4.5 bits)
+    for word in text.split_whitespace() {
+        let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
+        if clean.len() >= 24 && calculate_shannon_entropy(clean) >= 4.4 {
+            return true;
+        }
+    }
+    false
+}
+
+fn check_base64_obfuscation(text: &str, policy: &CompiledPolicy) -> Option<c_int> {
+    let b64_re = BASE64_REGEX.get_or_init(|| {
+        Regex::new(r"[A-Za-z0-9+/]{24,}={0,2}").unwrap()
+    });
+
+    for mat in b64_re.find_iter(text) {
+        let candidate = mat.as_str();
+        if let Ok(decoded_bytes) = BASE64_STANDARD.decode(candidate) {
+            if let Ok(decoded_str) = std::str::from_utf8(&decoded_bytes) {
+                for rule in &policy.rules {
+                    if rule.regex.is_match(decoded_str) {
+                        return Some(6); // Base64 Encoded Violation
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn evaluate_buffer(text: &str) -> (bool, c_int) {
     let store = get_policy_store();
     let policy = match store.read() {
@@ -66,10 +120,21 @@ fn evaluate_buffer(text: &str) -> (bool, c_int) {
         Err(_) => return (false, -1),
     };
 
+    // 1. Direct Regex scan
     for rule in &policy.rules {
         if rule.regex.is_match(text) {
             return (false, rule.id);
         }
+    }
+
+    // 2. Base64 Payload scan (Obfuscation Detection)
+    if let Some(violation_code) = check_base64_obfuscation(text, &policy) {
+        return (false, violation_code);
+    }
+
+    // 3. Shannon Entropy scan (Unknown API keys / Raw Secrets)
+    if check_high_entropy_secrets(text) {
+        return (false, 5); // Code 5: High-Entropy Secret
     }
 
     (true, 0)
@@ -111,7 +176,7 @@ pub extern "C" fn edgeguard_load_policy_file(file_path: *const c_char) -> c_int 
                         regex: compiled,
                     });
                 } else {
-                    return -4; // Invalid regex in policy
+                    return -4;
                 }
             }
         }
@@ -119,7 +184,7 @@ pub extern "C" fn edgeguard_load_policy_file(file_path: *const c_char) -> c_int 
         let store = get_policy_store();
         if let Ok(mut write_guard) = store.write() {
             *write_guard = CompiledPolicy { rules: new_rules };
-            0 // Success
+            0
         } else {
             -5
         }
