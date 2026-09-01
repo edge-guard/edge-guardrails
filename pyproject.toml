@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "edgeguard-sdk"
+version = "0.6.1"
+description = "Ultra-low-latency edge-native AI guardrails engine built in Rust"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+[tool.maturin]
+module-name = "edgeguard"
+features = ["python"]
