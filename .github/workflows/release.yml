@@ -1,0 +1,37 @@
+name: Build and Publish Wheels
+
+on:
+  push:
+    tags:
+      - 'v*' # הריצה תקרה רק כשנוסיף תגית גרסה כמו v0.6.1
+
+jobs:
+  build-wheels:
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Build Wheels with Maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --features python -o wheels
+          
+      - name: Upload Wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: wheels/*
