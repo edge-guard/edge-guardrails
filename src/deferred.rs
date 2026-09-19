@@ -93,6 +93,47 @@ CREATE INDEX IF NOT EXISTS idx_deferred_expiry ON deferred_work (expires_at);
 /// file means this module has been pointed at the outbox.
 const AUDIT_TABLE: &str = "audit_outbox";
 
+/// Default filename for the deferred store.
+///
+/// Deliberately unlike the audit outbox's `native_edge_queue.db`. The open
+/// guard already refuses a shared database, but a guard that fires is still
+/// an outage someone has to debug at 3am - the default should make the
+/// collision impossible rather than merely detectable.
+pub const DEFAULT_DB_FILENAME: &str = "edgeguard_deferred.db";
+
+/// [`DEFAULT_DB_FILENAME`] in the current directory.
+pub fn default_db_path() -> PathBuf {
+    PathBuf::from(DEFAULT_DB_FILENAME)
+}
+
+/// A deferred-store path that sits beside a given audit database and is
+/// guaranteed to differ from it.
+///
+/// The realistic configuration mistake is not inventing a path - it is
+/// copying the audit path into the deferred config because both are "the
+/// database". This exists so the natural thing to write is also the safe
+/// thing: hand it the audit path and get a sibling back.
+///
+/// `native_edge_queue.db` -> `native_edge_queue.deferred.db`
+///
+/// The result is never equal to the input, including for inputs with no
+/// extension, no file name, or an existing `.deferred` stem.
+pub fn beside_audit_db(audit_db: impl AsRef<Path>) -> PathBuf {
+    let p = audit_db.as_ref();
+    let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
+        // No usable file name (root, "..", a bare separator). Fall back to a
+        // fixed name inside whatever directory was given rather than
+        // returning something that could still collide.
+        return p.join(DEFAULT_DB_FILENAME);
+    };
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("db");
+    let name = format!("{stem}.deferred.{ext}");
+    match p.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -816,6 +857,91 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Default paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_default_filename_differs_from_the_audit_outbox() {
+        // The guard catches a shared database, but a guard that fires is
+        // still an outage someone debugs at 3am. The default has to make the
+        // collision impossible, not merely detectable.
+        assert_ne!(DEFAULT_DB_FILENAME, "native_edge_queue.db");
+        assert_ne!(default_db_path(), PathBuf::from("native_edge_queue.db"));
+    }
+
+    #[test]
+    fn beside_audit_db_never_returns_its_input() {
+        // The realistic mistake is copying the audit path into the deferred
+        // config because both are "the database". This helper exists so the
+        // natural thing to write is also the safe thing, which is only true
+        // if it holds for awkward inputs too.
+        for input in [
+            "native_edge_queue.db",
+            "/var/lib/edgeguard/native_edge_queue.db",
+            "./audit.sqlite",
+            "no_extension",
+            "already.deferred.db",
+            "/",
+            "..",
+            "",
+        ] {
+            let out = beside_audit_db(input);
+            assert_ne!(
+                out,
+                PathBuf::from(input),
+                "beside_audit_db({input:?}) returned its own input"
+            );
+        }
+    }
+
+    #[test]
+    fn beside_audit_db_keeps_the_directory_and_marks_the_stem() {
+        assert_eq!(
+            beside_audit_db("/var/lib/eg/native_edge_queue.db"),
+            PathBuf::from("/var/lib/eg/native_edge_queue.deferred.db")
+        );
+        assert_eq!(
+            beside_audit_db("audit.sqlite"),
+            PathBuf::from("audit.deferred.sqlite")
+        );
+        assert_eq!(
+            beside_audit_db("no_extension"),
+            PathBuf::from("no_extension.deferred.db")
+        );
+    }
+
+    #[test]
+    fn a_deferred_store_opens_at_the_derived_path_beside_a_live_outbox() {
+        // End to end: the two stores coexist in one directory, the guard is
+        // never reached, and neither sees the other's table.
+        let dir = std::env::temp_dir().join(format!(
+            "eg_beside_{}_{}",
+            std::process::id(),
+            unix_now_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audit = dir.join("native_edge_queue.db");
+        let deferred = beside_audit_db(&audit);
+        assert_ne!(audit, deferred);
+
+        let q = crate::audit_queue::AuditQueue::open(&audit, Default::default());
+        q.log(1, 201, "GRAPH_RULE_1", "tier1_rule", 10);
+
+        let d = DeferredQueue::open(&deferred, DeferredConfig::default())
+            .expect("deferred store refused a correctly derived sibling path");
+        d.submit("grey", 210, "tier1_rule", 0, Interim::ServeAndMark);
+        wait_for_rows(&deferred, 1);
+
+        let dc = Connection::open(&deferred).unwrap();
+        assert!(!table_exists(&dc, AUDIT_TABLE).unwrap());
+        assert!(table_exists(&dc, "deferred_work").unwrap());
+
+        drop(q);
+        drop(d);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -----------------------------------------------------------------------
