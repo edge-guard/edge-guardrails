@@ -79,8 +79,27 @@ impl ObfuscationFlags {
 
     /// Techniques that have no benign explanation in an LLM prompt. Their
     /// presence is itself hostile intent, independent of what they wrap.
-    pub const HOSTILE: u16 =
-        Self::BIDI_OVERRIDE | Self::ZERO_WIDTH | Self::LETTER_SPACED | Self::STRETCHED;
+    ///
+    /// # Why STRETCHED is not in this set
+    ///
+    /// It was, and it does not belong. [`Self::STRETCHED`] is a run-length
+    /// observation, not an evasion: `collapse_runs` sets it for any three
+    /// identical characters, so "Sooooo excited about the launch!!!",
+    /// "Hmmmm", "Thanks!!!" and "Great work everyone!!!" all carry it.
+    /// Measured against ordinary emphatic English it fires on 8 of 8 samples.
+    ///
+    /// The attacks it appeared to catch were coincidences of the same kind:
+    /// `my card is ٤٥٣٢٠١٥٠٠٠٠٠٠٠٠٧` trips it because the card number
+    /// contains a run of zeros, not because anything was obfuscated. Every
+    /// one of those payloads is either already blocked by a rule or is a PII
+    /// pattern that PII detection owns.
+    ///
+    /// A block-on-sight set has to hold techniques with no benign reading.
+    /// STRETCHED has an extremely common one. It remains a flag and still
+    /// contributes to [`Self::layers`], so stretched text can still push an
+    /// input over the grey threshold and reach the semantic tier - it just
+    /// cannot refuse a request on its own.
+    pub const HOSTILE: u16 = Self::BIDI_OVERRIDE | Self::ZERO_WIDTH | Self::LETTER_SPACED;
 
     #[inline]
     pub const fn bits(self) -> u16 {
