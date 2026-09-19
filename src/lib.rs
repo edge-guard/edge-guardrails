@@ -1459,7 +1459,7 @@ impl SecurityEngine {
 
 #[cfg(feature = "python")]
 fn scan_result_to_dict<'py>(py: Python<'py>, res: &ScanResult) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("is_safe", res.is_safe)?;
     dict.set_item("violation_code", res.violation_code)?;
     dict.set_item("reason", &res.reason)?;
@@ -1499,7 +1499,7 @@ impl PyEdgeGuard {
     fn scan<'py>(&self, py: Python<'py>, prompt: &str) -> PyResult<Bound<'py, PyDict>> {
         let inner = Arc::clone(&self.inner);
         let prompt_owned = prompt.to_string();
-        let res = py.allow_threads(move || inner.scan(&prompt_owned));
+        let res = py.detach(move || inner.scan(&prompt_owned));
         scan_result_to_dict(py, &res)
     }
 
@@ -1509,7 +1509,7 @@ impl PyEdgeGuard {
     fn sanitize(&self, py: Python<'_>, prompt: &str) -> String {
         let inner = Arc::clone(&self.inner);
         let owned = prompt.to_string();
-        py.allow_threads(move || inner.sanitize(&owned))
+        py.detach(move || inner.sanitize(&owned))
     }
 
     /// As `sanitize`, but raises `ValueError` instead of returning the
@@ -1518,7 +1518,7 @@ impl PyEdgeGuard {
     fn try_sanitize(&self, py: Python<'_>, prompt: &str) -> PyResult<String> {
         let inner = Arc::clone(&self.inner);
         let owned = prompt.to_string();
-        py.allow_threads(move || inner.try_sanitize(&owned))
+        py.detach(move || inner.try_sanitize(&owned))
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
@@ -1575,7 +1575,7 @@ fn decision_to_dict<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     use crate::tier::{DecidedBy, Verdict};
 
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item(
         "verdict",
         match d.verdict {
@@ -1628,7 +1628,7 @@ fn decision_to_dict<'py>(
 
     match &d.semantic {
         Some(s) => {
-            let sem = PyDict::new_bound(py);
+            let sem = PyDict::new(py);
             sem.set_item("malicious", s.malicious)?;
             sem.set_item("latency_us", s.latency.as_secs_f64() * 1e6)?;
             sem.set_item("tokens", s.tokens)?;
@@ -1772,8 +1772,9 @@ impl PyTieredGuard {
         let owned = prompt.to_string();
         // `inspect_owned` borrows a thread-local scratch, so releasing the GIL
         // here gives real parallelism across Python threads rather than
-        // serializing on a shared buffer.
-        let d = py.allow_threads(move || inner.inspect_owned(&owned));
+        // serializing on a shared buffer. (`detach` is pyo3 0.26+'s name for
+        // what was `allow_threads`; same semantics.)
+        let d = py.detach(move || inner.inspect_owned(&owned));
         decision_to_dict(py, prompt, &d)
     }
 
@@ -1787,7 +1788,7 @@ impl PyTieredGuard {
     /// says whether the tiering is doing its job.
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let m = self.inner.metrics();
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("total", m.total)?;
         d.set_item("oversize", m.oversize)?;
         d.set_item("obfuscation_blocks", m.obfuscation_blocks)?;
@@ -1855,7 +1856,7 @@ impl PyStreamScanner {
     /// previously it was not, because the scanner forgot.
     fn feed_token<'py>(&mut self, py: Python<'py>, token: &str) -> PyResult<Bound<'py, PyDict>> {
         let v = self.inner.feed_token(token);
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("is_safe", v.is_safe)?;
         dict.set_item("violation_code", v.violation_code)?;
         dict.set_item("reason", &v.reason)?;
