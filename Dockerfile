@@ -15,10 +15,10 @@
 #     nothing from `edgeguard`, so this happened to work, but any example or
 #     middleware in the image would fail with ImportError at runtime.
 #
-# Build:   docker build -t edgeguard:0.7.0 .
+# Build:   docker build -t edgeguard:0.8.0 .
 # Run:     docker run --rm -p 127.0.0.1:8080:8080 \
 #            -e EDGEGUARD_DASHBOARD_TOKEN=$(openssl rand -hex 32) \
-#            -v edgeguard-data:/data edgeguard:0.7.0
+#            -v edgeguard-data:/data edgeguard:0.8.0
 #
 # The dashboard authenticates every request and binds loopback INSIDE the
 # container; publishing it as `-p 127.0.0.1:8080:8080` keeps that true on the

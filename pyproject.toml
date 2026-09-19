@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "edgeguard-sdk"
-version = "0.7.0"
+version = "0.8.0"
 description = "On-device AI guardrails engine (Rust core, Python bindings via PyO3)"
 readme = "README.md"
 license = { file = "LICENSE" }

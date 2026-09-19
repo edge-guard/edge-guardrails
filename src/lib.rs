@@ -23,6 +23,7 @@ pub mod ffi;
 pub mod graph;
 pub mod semantic;
 pub mod signing;
+pub mod slowpath;
 pub mod stream;
 pub mod tier;
 
