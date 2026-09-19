@@ -32,7 +32,7 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
 
-      # 261 tests: unit, adversarial red-team, cross-module end-to-end, and the
+      # 274 tests: unit, adversarial red-team, cross-module end-to-end, and the
       # hostile-environment suite (disk full, lock contention, offline backlog).
       - name: Test suite
         run: cargo test --release
@@ -45,6 +45,28 @@ jobs:
         run: cargo check --features onnx
       - name: Feature — python
         run: cargo check --features python
+
+      # The inverse of the check above, and the one that actually protects the
+      # product promise. `cargo check --features onnx` proves the semantic tier
+      # still compiles; nothing proved the DETERMINISTIC tier still builds and
+      # passes without it. A single `use ort::…` that loses its cfg gate, or a
+      # semantic type leaking into a signature in tier.rs, breaks the
+      # no-AI-dependency build and would otherwise reach a release.
+      - name: Deterministic core — builds and passes with no features
+        run: cargo test --release --no-default-features
+
+      # Bloat guard. The gating is only worth anything if the dependency is
+      # genuinely absent, not merely unused: `ort` pulls a native ONNX Runtime
+      # and 16 additional crates. Asserting on the resolved tree is the only
+      # check that fails when someone makes `ort` non-optional.
+      - name: Deterministic core — no ONNX in the dependency tree
+        run: |
+          if cargo tree --no-default-features | grep -qE '^\S*\s*ort v|[^a-z]ort v'; then
+            echo "::error::'ort' resolved into the default build - the onnx feature is no longer optional"
+            cargo tree --no-default-features | grep -E 'ort v'
+            exit 1
+          fi
+          echo "ok: no ort in the default dependency tree"
 
   c_abi:
     name: C ABI — compile and link from C
