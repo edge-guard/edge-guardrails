@@ -207,10 +207,17 @@ def evaluate():
     print("\nBenign prompts incorrectly blocked:")
     any_fp = False
     for p in BENIGN:
-        legacy, tiered = legacy_blocks(p), tiered_blocks(p)
-        if legacy or tiered:
+        # NOT `legacy, tiered = ...`: those names hold the two engines that
+        # `legacy_blocks`/`tiered_blocks` close over, and rebinding them to
+        # booleans here broke every later call with
+        # "'bool' object has no attribute 'scan'" - which killed the run
+        # before it ever reached the regression gate below.
+        legacy_fp, tiered_fp = legacy_blocks(p), tiered_blocks(p)
+        if legacy_fp or tiered_fp:
             any_fp = True
-            who = ", ".join(x for x, hit in (("EdgeGuard", legacy), ("TieredGuard", tiered)) if hit)
+            who = ", ".join(
+                x for x, hit in (("EdgeGuard", legacy_fp), ("TieredGuard", tiered_fp)) if hit
+            )
             print(f"  [{who}] {p[:64]}")
     if not any_fp:
         print("  none")
