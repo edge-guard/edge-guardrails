@@ -17,6 +17,7 @@
 
 pub mod audit_queue;
 pub mod codes;
+pub mod deferred;
 pub mod deobfuscate;
 pub mod ffi;
 pub mod graph;
