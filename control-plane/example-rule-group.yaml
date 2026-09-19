@@ -1,0 +1,107 @@
+# =============================================================================
+# Example CustomRuleGroup, exported from the control plane
+# =============================================================================
+#
+# This is what a `custom_rule_groups` row plus its `custom_rules` children look
+# like on the wire. The field names are the schema's columns and
+# `graph::RuleSpec`'s fields, which are the same names on purpose: publishing a
+# policy version serializes these rows straight into a PolicyVersion's
+# `compiledSnapshot`, and an edge node deserializes that into a RuleGraph. No
+# translation layer, so nothing can drift.
+#
+# Load it with:
+#   let group = RuleGroupFile::from_path(path)?;
+#   let (graph, errors) = compile_policy(true, &[group])?;
+
+version: "1.0"
+group: "acme-corp-internal"
+
+rules:
+  # --- A plain literal block -------------------------------------------------
+  - id: 1
+    name: "Internal codename - Project Mercury"
+    any_of: ["project mercury", "prj-mercury"]
+    action: block
+    severity: high
+    code: 10001
+
+  # --- The rule shape a flat pattern list cannot express ---------------------
+  #
+  # Proximity plus negation: block a request that asks for the vault token,
+  # unless it is clearly the documented rotation runbook being discussed.
+  - id: 2
+    name: "Vault token exfiltration"
+    any_of: ["vault token", "vault_token", "vault root token"]
+    any_near: ["send", "post", "paste", "curl", "print", "show me", "upload"]
+    none_near: ["rotation runbook", "incident-1042", "how do i rotate"]
+    window: 64
+    action: block
+    severity: critical
+    code: 10002
+
+  # --- A conjunction ---------------------------------------------------------
+  #
+  # Both context tokens must be present in the window, not just one: "customer
+  # export" alone is an ordinary support request.
+  - id: 3
+    name: "Bulk customer data export"
+    any_of: ["export", "dump", "download"]
+    all_near: ["customer"]
+    any_near: ["all rows", "entire table", "every record", "full database"]
+    none_near: ["my own", "single customer", "one record"]
+    window: 80
+    action: block
+    severity: high
+    code: 10003
+
+  # --- A flag, routed to the semantic tier -----------------------------------
+  #
+  # Deliberately NOT a block. Mentioning a competitor is not a violation, but
+  # it is worth scoring for intent - so it becomes grey traffic rather than a
+  # refused request.
+  - id: 4
+    name: "Competitive intelligence probe"
+    any_of: ["initech", "hooli", "globex"]
+    any_near: ["pricing", "roadmap", "internal", "confidential"]
+    window: 60
+    action: flag
+    severity: low
+    code: 10004
+
+  # --- An exemption ----------------------------------------------------------
+  #
+  # `severity` is the CEILING this rule may exempt. At `high` it exempts the
+  # rules above but leaves any `critical` rule - including rule 2 - enforced,
+  # so knowing the magic phrase is not a universal pass.
+  - id: 5
+    name: "Security team red-team exercise (exempt)"
+    any_of: ["acme redteam exercise 2026"]
+    action: allow
+    severity: high
+
+  # --- Short token, boundaries required --------------------------------------
+  #
+  # `whole_word: true` (the default) is what keeps "eng" from matching inside
+  # "engineering", "engine", or "strengthen".
+  - id: 6
+    name: "Restricted org unit code"
+    any_of: ["eng", "fin"]
+    any_near: ["salary", "compensation", "headcount plan"]
+    window: 40
+    whole_word: true
+    action: flag
+    severity: medium
+    code: 10006
+
+  # --- Staged rollout --------------------------------------------------------
+  #
+  # Authored but not live. Ship every new rule disabled, enable it in a
+  # MONITOR-mode policy version, measure its false-positive rate against real
+  # traffic, and only then promote it to ENFORCE.
+  - id: 7
+    name: "Draft - supplier contract terms"
+    enabled: false
+    any_of: ["msa-2026-draft"]
+    action: block
+    severity: medium
+    code: 10007

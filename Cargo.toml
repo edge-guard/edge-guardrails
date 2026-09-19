@@ -1,0 +1,50 @@
+[package]
+name = "edgeguard-sdk"
+version = "0.7.0"
+edition = "2021"
+
+[lib]
+name = "edgeguard"
+# staticlib is what an embedded target or a C++ proxy links against; cdylib
+# serves both the Python extension and a shared-object C integration.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+aho-corasick = "1.1"
+unicode-normalization = "0.1"
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+regex = "1.13.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+# ONNX Runtime bindings - see the `onnx` feature below.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic"], optional = true }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast", "zeroize", "alloc"] }
+sha2 = "0.11.0"
+
+[features]
+default = []
+python = ["dep:pyo3"]
+# Tier 2 semantic scoring via a local ONNX model.
+#
+# Off by default on purpose. `ort` is configured with `load-dynamic`, so the
+# ONNX Runtime shared library is resolved at RUNTIME from `ORT_DYLIB_PATH`
+# rather than downloaded and linked at build time: the default build of an
+# edge SDK stays small, offline, and free of a native-binary download step.
+# An operator who wants the semantic tier opts in with
+# `--features onnx` and supplies the runtime.
+onnx = ["dep:ort"]
+
+
+[dev-dependencies]
+proptest = "1.4"
+
+# We deliberately do NOT set panic = "abort" here. EdgeGuard is a guardrails
+# library embedded inside a host process (an LLM server, a gateway, a Python
+# app). If a crafted/adversarial payload were ever to trigger a Rust panic,
+# panic = "abort" would take the ENTIRE HOST PROCESS down with it - a security
+# scanner should never itself become a DoS vector. Instead we keep unwinding
+# enabled and catch panics explicitly at the public API boundary in src/lib.rs
+# (`scan()`), fail closed (treat an internal panic as "unsafe"), and log it.
+[profile.release]
+panic = "unwind"

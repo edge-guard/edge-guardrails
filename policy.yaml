@@ -1,0 +1,21 @@
+version: "1.0"
+rules:
+  - id: 1
+    name: "PII - Email Detection"
+    enabled: true
+    pattern: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+
+  - id: 2
+    name: "Financial - Credit Card Detection"
+    enabled: true
+    pattern: "\\b(?:\\d[ -]*?){13,16}\\b"
+
+  - id: 3
+    name: "Secrets - API Keys"
+    enabled: true
+    pattern: "(?i)(?:sk-[a-zA-Z0-9_\\-]{16,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36})"
+
+  - id: 4
+    name: "Security - Prompt Injection"
+    enabled: true
+    pattern: "(?i)(ignore previous instructions|system override|jailbreak)"

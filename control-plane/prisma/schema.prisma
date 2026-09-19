@@ -1,0 +1,1101 @@
+// =============================================================================
+// EdgeGuard CISO Control Plane - PostgreSQL schema
+// =============================================================================
+//
+// The SDK in ../src is the data plane: it runs in-process at the edge, decides
+// in microseconds, and must keep working with no network. This schema is the
+// CONTROL plane: where a security organization authors policy, delegates who
+// may change it, and reads back what the fleet actually did.
+//
+// Four design decisions shape everything below.
+//
+// 1. TENANT ISOLATION IS ENFORCED BY THE DATABASE, NOT BY QUERIES.
+//    Every tenant-scoped table carries `tenantId`, and every unique
+//    constraint is scoped by it. Row-Level Security policies (see
+//    migrations/) make `tenantId` a mandatory predicate, so a forgotten
+//    `WHERE tenantId = ?` in application code returns zero rows instead of
+//    another customer's policy. Application-layer-only isolation is the
+//    single most common way a multi-tenant security product leaks.
+//
+// 2. POLICY IS IMMUTABLE AND VERSIONED.
+//    A `Policy` is a named, long-lived pointer; a `PolicyVersion` is a frozen
+//    snapshot of the rules it published. Edits create a new version. This is
+//    what makes "which exact policy was in force when that request was
+//    blocked?" answerable months later, which is the question every incident
+//    review and every SOC 2 / ISO 27001 audit actually asks. Mutable policy
+//    rows make that question unanswerable.
+//
+// 3. AUDIT LOGS ARE APPEND-ONLY, TIME-PARTITIONED, AND SEPARATE FROM
+//    DECISION EVENTS.
+//    `AuditEvent` records human actions on the control plane (low volume,
+//    kept for years, must never be deleted). `DecisionEvent` records data
+//    plane verdicts (very high volume, short retention, dropped by the
+//    partition). Putting both in one table forces the same retention and the
+//    same index strategy on workloads that share nothing.
+//
+// 4. RULES ARE STORED IN THE SHAPE THE ENGINE COMPILES.
+//    `CustomRule`'s columns map one-to-one onto `graph::RuleSpec`
+//    (`anyOf` / `allNear` / `anyNear` / `noneNear` / `window`), so publishing
+//    a version is a serialization, not a translation. A schema that stored
+//    only a regex string would have thrown away the proximity and boolean
+//    structure the Tier 1 engine exists to evaluate.
+//
+// -----------------------------------------------------------------------------
+// Generate / migrate:
+//   npx prisma migrate dev
+//   npx prisma generate
+// The raw SQL that Prisma's DSL cannot express (partitioning, RLS, BRIN
+// indexes, the append-only trigger) lives in
+//   migrations/00000000000000_audit_partitioning/migration.sql
+// and must be applied for the guarantees above to actually hold.
+// -----------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Tenancy
+// =============================================================================
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  // Retained for the contractual window with policy enforcement frozen, so a
+  // returning customer keeps their audit history. Deleting a tenant row would
+  // cascade away the audit trail that compliance requires us to keep.
+  PENDING_DELETION
+}
+
+enum PlanTier {
+  FREE
+  TEAM
+  ENTERPRISE
+}
+
+model Tenant {
+  id        String       @id @default(uuid()) @db.Uuid
+  /// Stable, URL-safe, human-meaningful identifier used in API paths and
+  /// SDK bootstrap config. Immutable once issued: it appears in customer
+  /// automation, so renaming it is a breaking change.
+  slug      String       @unique @db.VarChar(63)
+  name      String       @db.VarChar(200)
+  status    TenantStatus @default(ACTIVE)
+  plan      PlanTier     @default(TEAM)
+
+  /// Data residency region. Present on the tenant, not inferred from a
+  /// connection string, because an EU tenant's decision events may not be
+  /// written to a US partition and the application needs to route on it.
+  region    String       @default("us-east-1") @db.VarChar(32)
+
+  createdAt DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(6)
+  deletedAt DateTime?    @db.Timestamptz(6)
+
+  users            TenantMembership[]
+  roles            Role[]
+  policies         Policy[]
+  ruleGroups       CustomRuleGroup[]
+  deployments      Deployment[]
+  apiKeys          ApiKey[]
+  auditEvents      AuditEvent[]
+  decisionEvents   DecisionEvent[]
+  policyVersions   PolicyVersion[]
+  ssoConnection    SsoConnection?
+  retention        RetentionPolicy?
+  signingKeys      SigningKey[]
+  policyBundles    PolicyBundle[]
+  devices          Device[]
+
+  @@index([status, plan])
+  @@map("tenants")
+}
+
+/// SAML/OIDC configuration. Its own table rather than columns on `Tenant`
+/// because it is optional, wide, and contains a client secret that should not
+/// be selected by the routine `SELECT * FROM tenants` an application does on
+/// every request.
+model SsoConnection {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @unique @db.Uuid
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  provider        String   @db.VarChar(32) // "okta" | "azure-ad" | "google" | "generic-oidc"
+  issuerUrl       String   @db.Text
+  clientId        String   @db.Text
+  /// Envelope-encrypted by the application (KMS), never plaintext at rest.
+  clientSecretEnc Bytes?
+  /// Directory group name -> Role.id. Drives automatic role assignment on
+  /// login, so leavers lose access when IdP membership changes rather than
+  /// when someone remembers to click "remove user".
+  groupRoleMap    Json     @default("{}")
+  /// When true, local password login is refused for this tenant.
+  enforceSso      Boolean  @default(false)
+
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("sso_connections")
+}
+
+/// Per-tenant retention, separated so it can be read by the partition-dropping
+/// job without loading the tenant row, and so an enterprise contract can
+/// override the default without a schema change.
+model RetentionPolicy {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenantId            String   @unique @db.Uuid
+  tenant              Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// High-volume data plane verdicts. Days, not years.
+  decisionEventDays   Int      @default(90)
+  /// Human actions on the control plane. Years: this is the compliance
+  /// artifact, and 7 years is the common SOX/financial-services floor.
+  auditEventDays      Int      @default(2557)
+  /// Whether prompt excerpts may be persisted at all. Defaults to false:
+  /// storing prompt text is a privacy decision a customer must opt into
+  /// explicitly, never a default that leaks their users' data into our logs.
+  storePromptExcerpts Boolean  @default(false)
+
+  updatedAt           DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("retention_policies")
+}
+
+// =============================================================================
+// RBAC
+// =============================================================================
+//
+// Users are global (one identity may belong to several tenants - a consultant,
+// an MSP operator), while roles and memberships are tenant-scoped. Modelling
+// users as tenant-scoped would force duplicate accounts and duplicate MFA
+// enrolment per tenant, which is both worse security and worse UX.
+//
+// Permissions are seeded rows rather than an enum column so a new capability
+// ships as data, without a migration on a table that every request reads.
+
+model User {
+  id            String             @id @default(uuid()) @db.Uuid
+  email         String             @unique @db.VarChar(320)
+  /// Argon2id hash. Null for SSO-only identities - a null here means "this
+  /// account cannot be password-authenticated", which is stronger than
+  /// storing an unusable placeholder.
+  passwordHash  String?            @db.Text
+  fullName      String?            @db.VarChar(200)
+
+  mfaEnabled    Boolean            @default(false)
+  mfaSecretEnc  Bytes?
+
+  lastLoginAt   DateTime?          @db.Timestamptz(6)
+  /// Consecutive failed attempts, for lockout. On the user rather than a
+  /// separate table because it is written on every failed login and read on
+  /// every attempt.
+  failedLogins  Int                @default(0)
+  lockedUntil   DateTime?          @db.Timestamptz(6)
+
+  createdAt     DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime           @updatedAt @db.Timestamptz(6)
+  deletedAt     DateTime?          @db.Timestamptz(6)
+
+  memberships   TenantMembership[]
+  auditEvents   AuditEvent[]
+  apiKeys       ApiKey[]
+  sessions      Session[]
+  approvals     PolicyApproval[]
+
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model Session {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the session token. The plaintext token is never stored, so a
+  /// database disclosure does not hand over live sessions.
+  tokenHash    String   @unique @db.Char(64)
+  /// Which tenant this session is currently acting in. A user with several
+  /// memberships switches tenant by starting a new session context, so a
+  /// request's authority is never ambiguous.
+  tenantId     String?  @db.Uuid
+
+  ipAddress    String?  @db.Inet
+  userAgent    String?  @db.Text
+  expiresAt    DateTime @db.Timestamptz(6)
+  revokedAt    DateTime? @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  tenantId    String           @db.Uuid
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String           @db.VarChar(64)
+  description String?          @db.Text
+  /// System roles (Owner, Security Admin, Analyst, Read-Only) are seeded per
+  /// tenant and cannot be edited or deleted - otherwise a tenant can delete
+  /// the only role that grants `tenant:manage` and lock itself out
+  /// permanently.
+  isSystem    Boolean          @default(false)
+
+  createdAt   DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime         @updatedAt @db.Timestamptz(6)
+
+  permissions RolePermission[]
+  memberships TenantMembership[]
+
+  /// Scoped by tenant: two tenants may both have a role called "Analyst".
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+/// The capability catalogue. Global and seeded, referenced by every tenant's
+/// roles.
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  /// Stable `resource:action` key - "policy:publish", "rule:write",
+  /// "audit:read", "tenant:manage". The application authorizes against this
+  /// string, so it is the real contract and must never be renamed.
+  key         String           @unique @db.VarChar(64)
+  description String           @db.Text
+  /// Grouping for the permission-picker UI only; carries no authority.
+  category    String           @db.VarChar(32)
+  /// Marks a permission that can change what the fleet enforces. The UI
+  /// requires a second confirmation for these, and they are the set that
+  /// `Policy.requiresApproval` gates.
+  isDangerous Boolean          @default(false)
+
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+/// Explicit join table rather than Prisma's implicit many-to-many, because
+/// "who granted this permission, and when?" is itself an audit question.
+model RolePermission {
+  roleId       String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String     @db.Uuid
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  grantedAt    DateTime   @default(now()) @db.Timestamptz(6)
+  grantedBy    String?    @db.Uuid
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+model TenantMembership {
+  id        String           @id @default(uuid()) @db.Uuid
+  tenantId  String           @db.Uuid
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String           @db.Uuid
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String           @db.Uuid
+  role      Role             @relation(fields: [roleId], references: [id])
+
+  status    MembershipStatus @default(INVITED)
+  /// Time-boxed access for contractors and break-glass elevation. Checked on
+  /// every authorization, so expiry is enforced rather than merely recorded.
+  expiresAt DateTime?        @db.Timestamptz(6)
+
+  invitedBy String?          @db.Uuid
+  createdAt DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime         @updatedAt @db.Timestamptz(6)
+
+  /// One membership per user per tenant. Multiple roles are expressed by
+  /// composing permissions into a role, not by stacking memberships - which
+  /// keeps "what can this person do here?" a single lookup instead of a
+  /// union that is easy to get wrong.
+  @@unique([tenantId, userId])
+  @@index([userId, status])
+  @@index([tenantId, status])
+  @@index([roleId])
+  @@map("tenant_memberships")
+}
+
+/// Machine credentials for SDK instances and CI. Separate from `User` because
+/// the lifecycle is different (rotation, no MFA, no email) and because an API
+/// key must be revocable without touching a human account.
+model ApiKey {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @db.Uuid
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// The human accountable for this credential.
+  createdById String?   @db.Uuid
+  createdBy   User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  name        String    @db.VarChar(120)
+  /// Short public prefix shown in the UI and carried in logs, so a key can be
+  /// identified in an incident without the secret being recoverable.
+  keyPrefix   String    @unique @db.VarChar(16)
+  /// SHA-256 of the full key. Never the key itself.
+  keyHash     String    @unique @db.Char(64)
+  /// Subset of the creator's permissions. Enforced at authorization time as
+  /// an intersection, so a key cannot outlive or out-scope the role that
+  /// issued it.
+  scopes      String[]
+
+  lastUsedAt  DateTime? @db.Timestamptz(6)
+  expiresAt   DateTime? @db.Timestamptz(6)
+  revokedAt   DateTime? @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([tenantId, revokedAt])
+  @@map("api_keys")
+}
+
+// =============================================================================
+// Policy
+// =============================================================================
+
+enum PolicyVersionState {
+  DRAFT
+  PENDING_APPROVAL
+  PUBLISHED
+  /// Superseded by a newer published version. Kept forever: an audit event
+  /// referencing it must stay resolvable.
+  ARCHIVED
+  /// Published, then withdrawn because it caused an incident. Distinct from
+  /// ARCHIVED so "we rolled this back" is visible in the history.
+  ROLLED_BACK
+}
+
+enum EnforcementMode {
+  /// Evaluate and record, enforce nothing. Every policy change should ship
+  /// here first - it is the only way to measure a rule's false-positive rate
+  /// against real traffic before it can refuse anyone's request.
+  MONITOR
+  /// Enforce BLOCK verdicts, record FLAG verdicts.
+  ENFORCE
+  /// Enforce BLOCK and FLAG. For high-assurance environments.
+  STRICT
+}
+
+/// A named policy - a stable pointer that deployments subscribe to. Holds no
+/// rules itself; its rules live in the version it currently publishes.
+model Policy {
+  id                String          @id @default(uuid()) @db.Uuid
+  tenantId          String          @db.Uuid
+  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name              String          @db.VarChar(120)
+  description       String?         @db.Text
+
+  /// Exactly one policy per tenant may be the default, enforced by a partial
+  /// unique index in the raw migration (Prisma's DSL cannot express
+  /// `WHERE isDefault`).
+  isDefault         Boolean         @default(false)
+
+  /// Require a second approver before a version may be published. The
+  /// four-eyes control that keeps one compromised admin account from
+  /// disabling a fleet's guardrails.
+  requiresApproval  Boolean         @default(true)
+  minApprovals      Int             @default(1)
+
+  createdAt         DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @db.Timestamptz(6)
+  archivedAt        DateTime?       @db.Timestamptz(6)
+
+  versions          PolicyVersion[]
+  deployments       Deployment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, archivedAt])
+  @@map("policies")
+}
+
+/// An immutable snapshot of a policy's content.
+///
+/// `compiledSnapshot` is the whole point: the fully resolved rule set as the
+/// engine will compile it, frozen at publish time. Reconstructing what was in
+/// force by re-joining today's (possibly edited) `CustomRule` rows is exactly
+/// the mistake that makes an audit trail unusable - a rule edited after an
+/// incident would silently rewrite history.
+model PolicyVersion {
+  id               String             @id @default(uuid()) @db.Uuid
+  tenantId         String             @db.Uuid
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  policyId         String             @db.Uuid
+  policy           Policy             @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  /// Monotonic per policy, assigned by the application inside the publish
+  /// transaction.
+  version          Int
+  state            PolicyVersionState @default(DRAFT)
+  changeNote       String?            @db.Text
+
+  /// Engine configuration, mirroring `tier::TierConfig`.
+  enforcementMode  EnforcementMode    @default(MONITOR)
+  blockThreshold   Decimal            @default(0.90) @db.Decimal(4, 3)
+  flagThreshold    Decimal            @default(0.60) @db.Decimal(4, 3)
+  tier2BudgetMs    Int                @default(5)
+  /// "FAIL_OPEN" | "FAIL_CLOSED_FLAG" | "FAIL_CLOSED_BLOCK"
+  fallbackPolicy   String             @default("FAIL_CLOSED_FLAG") @db.VarChar(24)
+  /// Semantic model pinned by version. A guardrail whose model can change
+  /// underneath a published policy is not a published policy.
+  semanticModelId  String?            @db.Uuid
+  semanticModel    SemanticModel?     @relation(fields: [semanticModelId], references: [id])
+
+  /// Frozen, fully-resolved rule set, in `graph::RuleGroupFile` shape.
+  compiledSnapshot Json
+  /// SHA-256 of the canonical serialization of `compiledSnapshot`. An edge
+  /// node compares this before downloading, so a no-op reload costs one
+  /// 32-byte comparison instead of a policy transfer.
+  snapshotHash     String             @db.Char(64)
+  /// Denormalized count, for the UI. Cheap to maintain at publish time,
+  /// expensive to compute by scanning a JSONB blob on every page load.
+  ruleCount        Int                @default(0)
+
+  createdById      String?            @db.Uuid
+  publishedAt      DateTime?          @db.Timestamptz(6)
+  createdAt        DateTime           @default(now()) @db.Timestamptz(6)
+
+  ruleGroups       PolicyRuleGroup[]
+  approvals        PolicyApproval[]
+  deployments      Deployment[]
+  bundles          PolicyBundle[]
+
+  @@unique([policyId, version])
+  @@index([tenantId, state])
+  @@index([snapshotHash])
+  /// Covers the hot control-plane read: "the current published version of
+  /// this policy".
+  @@index([policyId, state, version(sort: Desc)])
+  @@map("policy_versions")
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+/// Four-eyes approval. One row per reviewer, so a rejection is preserved
+/// alongside approvals rather than overwriting the record.
+model PolicyApproval {
+  id              String           @id @default(uuid()) @db.Uuid
+  policyVersionId String           @db.Uuid
+  policyVersion   PolicyVersion    @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
+  reviewerId      String           @db.Uuid
+  reviewer        User             @relation(fields: [reviewerId], references: [id])
+
+  decision        ApprovalDecision
+  comment         String?          @db.Text
+  createdAt       DateTime         @default(now()) @db.Timestamptz(6)
+
+  /// One decision per reviewer per version. A reviewer who changes their mind
+  /// updates this row, leaving `updatedAt` as the record; they cannot stack
+  /// approvals to satisfy `minApprovals` alone.
+  @@unique([policyVersionId, reviewerId])
+  @@index([reviewerId])
+  @@map("policy_approvals")
+}
+
+// =============================================================================
+// Custom rule groups
+// =============================================================================
+
+enum RuleAction {
+  BLOCK
+  FLAG
+  ALLOW
+}
+
+enum RuleSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// A reusable, independently versioned bundle of rules - "PCI-DSS terms",
+/// "internal codenames", "customer-support exemptions".
+///
+/// Groups exist so one bundle can be attached to several policies (production
+/// strict, staging monitor) and maintained once. A schema that hung rules
+/// directly off a policy forces copy-paste between environments, and
+/// copy-pasted security rules drift.
+model CustomRuleGroup {
+  id          String            @id @default(uuid()) @db.Uuid
+  tenantId    String            @db.Uuid
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String            @db.VarChar(120)
+  description String?           @db.Text
+  /// Anthropic-maintained groups shipped to every tenant read-only. A tenant
+  /// may disable one in its policy but cannot edit it, so a baseline
+  /// detection cannot be quietly weakened.
+  isManaged   Boolean           @default(false)
+  enabled     Boolean           @default(true)
+
+  createdById String?           @db.Uuid
+  createdAt   DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime          @updatedAt @db.Timestamptz(6)
+  archivedAt  DateTime?         @db.Timestamptz(6)
+
+  rules       CustomRule[]
+  policies    PolicyRuleGroup[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, enabled, archivedAt])
+  @@map("custom_rule_groups")
+}
+
+/// Join table carrying the ordering and per-policy override. Attaching a
+/// group to a policy is a decision with its own attributes, so it needs its
+/// own row rather than an implicit relation.
+model PolicyRuleGroup {
+  policyVersionId String           @db.Uuid
+  policyVersion   PolicyVersion    @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
+  ruleGroupId     String           @db.Uuid
+  ruleGroup       CustomRuleGroup  @relation(fields: [ruleGroupId], references: [id], onDelete: Cascade)
+
+  /// Evaluation order for reporting and for deterministic tie-breaking.
+  sortOrder       Int              @default(0)
+  /// Downgrade a whole group to FLAG for this policy without editing the
+  /// group - how a tenant safely trials a managed group in production.
+  overrideAction  RuleAction?
+
+  @@id([policyVersionId, ruleGroupId])
+  @@index([ruleGroupId])
+  @@map("policy_rule_groups")
+}
+
+/// One rule, stored in the exact shape `graph::RuleSpec` compiles from.
+///
+/// The boolean and proximity structure is preserved in columns rather than
+/// flattened into a regex string. That is not a stylistic choice: the Tier 1
+/// engine's whole value is evaluating `trigger AND (all of X) AND (any of Y)
+/// AND NOT (any of Z)` within a byte window in one Aho-Corasick pass. A
+/// schema storing only `pattern TEXT` cannot express it, and would force
+/// every tenant rule back onto a per-rule regex scan.
+model CustomRule {
+  id           String          @id @default(uuid()) @db.Uuid
+  groupId      String          @db.Uuid
+  group        CustomRuleGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  /// Stable numeric id used in violation codes and in the audit trail.
+  /// Unique within the group, assigned by the application.
+  ruleNumber   Int
+  name         String          @db.VarChar(160)
+  description  String?         @db.Text
+  enabled      Boolean         @default(true)
+
+  // --- the boolean expression -------------------------------------------
+  /// Trigger literals, OR-ed. Must be non-empty (CHECK constraint in the
+  /// raw migration).
+  anyOf        String[]
+  /// Context literals, all of which must be in window (AND).
+  allNear      String[]
+  /// Context literals, at least one of which must be in window (OR).
+  anyNear      String[]
+  /// Context literals, none of which may be in window (NOT).
+  noneNear     String[]
+  /// Proximity window in bytes of normalized text. 0 = whole document.
+  windowBytes  Int             @default(0)
+  /// Require the trigger to sit on word boundaries.
+  wholeWord    Boolean         @default(true)
+
+  action       RuleAction      @default(BLOCK)
+  severity     RuleSeverity    @default(HIGH)
+  /// Violation code surfaced to the caller. Null derives `200 + ruleNumber`.
+  code         Int?
+
+  // --- authoring metadata ------------------------------------------------
+  /// Prompts that MUST match. Run in CI before a version may be published:
+  /// a rule with no positive test is a rule nobody has proven works.
+  testPositive String[]
+  /// Prompts that must NOT match. This is the field that prevents the
+  /// false-positive regressions the flat phrase list kept producing -
+  /// "act as a reviewer for this PR" belongs here.
+  testNegative String[]
+
+  /// MITRE ATLAS / OWASP LLM Top 10 references, for compliance mapping.
+  references   String[]
+
+  createdById  String?         @db.Uuid
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(6)
+
+  @@unique([groupId, ruleNumber])
+  @@index([groupId, enabled])
+  @@map("custom_rules")
+}
+
+// =============================================================================
+// Models and deployments
+// =============================================================================
+
+/// A Tier 2 artifact, pinned by content hash.
+model SemanticModel {
+  id            String          @id @default(uuid()) @db.Uuid
+  name          String          @db.VarChar(120)
+  version       String          @db.VarChar(40)
+  /// "onnx" | "heuristic"
+  backend       String          @db.VarChar(24)
+
+  /// Object-store URI for the .onnx artifact and its vocab.
+  artifactUri   String?         @db.Text
+  vocabUri      String?         @db.Text
+  /// SHA-256 of the artifact. An edge node verifies this before loading:
+  /// a guardrail that will load any bytes handed to it is a supply-chain
+  /// vulnerability, not a guardrail.
+  artifactHash  String?         @db.Char(64)
+
+  maxSeqLen     Int             @default(128)
+  /// Measured p50/p99 on reference hardware, so the control plane can warn
+  /// when a tenant pins a model that cannot meet their configured budget.
+  p50LatencyMs  Decimal?        @db.Decimal(6, 2)
+  p99LatencyMs  Decimal?        @db.Decimal(6, 2)
+
+  createdAt     DateTime        @default(now()) @db.Timestamptz(6)
+  deprecatedAt  DateTime?       @db.Timestamptz(6)
+
+  policyVersions PolicyVersion[]
+
+  @@unique([name, version])
+  @@map("semantic_models")
+}
+
+enum DeploymentHealth {
+  HEALTHY
+  DEGRADED
+  /// No heartbeat within the expected interval.
+  STALE
+  UNREACHABLE
+}
+
+/// One SDK fleet - "prod-api-gateway", "staging", "eu-inference".
+///
+/// Deployments subscribe to a `Policy` and report which `PolicyVersion` they
+/// have actually loaded. Those are separate columns on purpose: the gap
+/// between "what we published" and "what is running" is the operational
+/// question, and a schema with one column cannot express it.
+model Deployment {
+  id                 String           @id @default(uuid()) @db.Uuid
+  tenantId           String           @db.Uuid
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name               String           @db.VarChar(120)
+  environment        String           @db.VarChar(32) // "production" | "staging" | "dev"
+
+  policyId           String           @db.Uuid
+  policy             Policy           @relation(fields: [policyId], references: [id])
+  /// What this fleet has actually loaded. Null until the first heartbeat.
+  activeVersionId    String?          @db.Uuid
+  activeVersion      PolicyVersion?   @relation(fields: [activeVersionId], references: [id])
+
+  sdkVersion         String?          @db.VarChar(32)
+  instanceCount      Int              @default(0)
+  health             DeploymentHealth @default(STALE)
+  lastHeartbeatAt    DateTime?        @db.Timestamptz(6)
+
+  /// Rolled-up counters from the edge, mirroring `tier::MetricsSnapshot`.
+  /// Denormalized here because the dashboard's landing page needs them on
+  /// every load and aggregating the partitioned event table for that would
+  /// be absurd.
+  totalRequests      BigInt           @default(0)
+  totalBlocks        BigInt           @default(0)
+  totalFlags         BigInt           @default(0)
+  tier2Calls         BigInt           @default(0)
+  tier2Overruns      BigInt           @default(0)
+  breakerTrips       BigInt           @default(0)
+
+  createdAt          DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime         @updatedAt @db.Timestamptz(6)
+
+  decisionEvents     DecisionEvent[]
+  devices            Device[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, environment])
+  @@index([health, lastHeartbeatAt])
+  @@map("deployments")
+}
+
+// =============================================================================
+// Audit: human actions on the control plane
+// =============================================================================
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+  /// Attempted and refused by authorization. Deliberately recorded: a burst
+  /// of DENIED events is one of the strongest available signals of a
+  /// compromised account.
+  DENIED
+}
+
+/// Append-only record of every control-plane action.
+///
+/// Kept for years and never updated or deleted - enforced by a trigger in the
+/// raw migration, not merely by convention, because "append-only by
+/// convention" is not a control an auditor accepts.
+///
+/// Actor identity is denormalized (`actorEmail`, `actorIpAddress`) rather than
+/// joined on read: a user row may later be renamed or soft-deleted, and an
+/// audit record must still say who did it *at the time*. This is the one place
+/// where denormalization is required for correctness, not performance.
+model AuditEvent {
+  id            BigInt       @default(autoincrement())
+  tenantId      String       @db.Uuid
+  /// RESTRICT, not Cascade: this table is the compliance artifact. A tenant
+  /// is retired via TenantStatus.PENDING_DELETION with its history exported
+  /// first, and a stray `DELETE FROM tenants` must fail loudly rather than
+  /// silently erase years of records.
+  tenant        Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  /// Partition key. Also the primary sort for every query this table serves.
+  occurredAt    DateTime     @default(now()) @db.Timestamptz(6)
+
+  // --- who ---------------------------------------------------------------
+  actorUserId   String?      @db.Uuid
+  actorUser     User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  /// Frozen at write time. See the note above.
+  actorEmail    String?      @db.VarChar(320)
+  actorApiKeyId String?      @db.Uuid
+  actorIp       String?      @db.Inet
+  actorUserAgent String?     @db.Text
+
+  // --- what --------------------------------------------------------------
+  /// `resource.action` - "policy.publish", "rule_group.update",
+  /// "membership.revoke", "api_key.create".
+  action        String       @db.VarChar(64)
+  resourceType  String       @db.VarChar(40)
+  resourceId    String?      @db.VarChar(64)
+  resourceName  String?      @db.VarChar(200)
+  outcome       AuditOutcome @default(SUCCESS)
+
+  /// Field-level before/after for the changed columns only. Storing whole
+  /// rows would balloon the table and copy secrets into it; the application
+  /// redacts secret-bearing fields before writing.
+  changes       Json?
+  /// Request correlation id, so a control-plane action can be tied to the
+  /// API request and the trace that produced it.
+  requestId     String?      @db.VarChar(64)
+
+  @@index([tenantId, occurredAt(sort: Desc)])
+  @@index([tenantId, action, occurredAt(sort: Desc)])
+  @@index([tenantId, actorUserId, occurredAt(sort: Desc)])
+  @@index([tenantId, resourceType, resourceId])
+  @@index([tenantId, outcome, occurredAt(sort: Desc)])
+  /// Composite, because the table is RANGE-partitioned on `occurredAt` and
+  /// Postgres requires the partition key in every unique constraint. Declared
+  /// here so the model matches the real table and `prisma migrate diff`
+  /// does not report phantom drift on every run.
+  @@id([id, occurredAt])
+  @@map("audit_events")
+}
+
+// =============================================================================
+// Decision events: data plane verdicts
+// =============================================================================
+
+enum DecisionVerdict {
+  ALLOW
+  FLAG
+  BLOCK
+}
+
+enum DecidedByTier {
+  SIZE_GUARD
+  OBFUSCATION
+  TIER1_RULE
+  TIER1_DETERMINISTIC
+  TIER1_ALLOWLIST
+  TIER2_MODEL
+  TIER2_UNAVAILABLE
+  TIER2_SHED
+  INTERNAL_ERROR
+}
+
+/// A single verdict from the edge - high volume, short retention.
+///
+/// Its own table, not a variant of `AuditEvent`, because the two share
+/// nothing operationally: this one takes millions of rows a day, is
+/// aggregated far more often than it is read row-by-row, and is dropped by
+/// the partition after ~90 days. Forcing it into the years-long append-only
+/// audit table would make both slow and make the compliance retention rule
+/// unimplementable.
+///
+/// No prompt text by default. `promptExcerpt` is written only when the
+/// tenant's `RetentionPolicy.storePromptExcerpts` is true, and never carries
+/// the matched value for a custom rule or a policy regex - an operator-authored
+/// pattern can match an API key or an account number, so what it matched is
+/// reduced to a category before it is stored. This mirrors `audit_label()` in
+/// the SDK, and it is the same reasoning: the caller already has the prompt;
+/// our database should not acquire a copy.
+model DecisionEvent {
+  id              BigInt          @default(autoincrement())
+  tenantId        String          @db.Uuid
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deploymentId    String          @db.Uuid
+  deployment      Deployment      @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  /// Partition key.
+  occurredAt      DateTime        @default(now()) @db.Timestamptz(6)
+
+  verdict         DecisionVerdict
+  decidedBy       DecidedByTier
+  violationCode   Int?
+  /// Which rule fired. A plain integer, not an FK: the rule row may be edited
+  /// or deleted later, and this table must not carry a foreign key that
+  /// blocks that or cascades a delete into the event history.
+  ruleNumber      Int?
+  ruleGroupId     String?         @db.Uuid
+  /// The policy version in force. Resolves against the frozen
+  /// `compiledSnapshot`, which is what makes this row interpretable years
+  /// later.
+  policyVersionId String?         @db.Uuid
+
+  /// `ObfuscationFlags` bitfield from the de-obfuscator. Cheap to store, and
+  /// the strongest available signal for hunting novel evasion campaigns.
+  obfuscationBits Int             @default(0)
+  /// Tier 2 score x 1000, as an integer. Avoids float comparison in the
+  /// aggregation queries that drive threshold tuning.
+  semanticScore   Int?
+  semanticModelId String?         @db.Uuid
+
+  latencyUs       Int?
+  /// True when a deterministic tier decided and Tier 2 was skipped. The
+  /// column the bypass-ratio dashboard aggregates.
+  modelBypassed   Boolean         @default(true)
+
+  /// Which device produced this verdict, and its per-device sequence number.
+  ///
+  /// Together these are the idempotency key for ingestion. The edge outbox
+  /// delivers **at least once** by design - a lease that is not acknowledged
+  /// because the uplink dropped comes back and is shipped again - so without
+  /// a unique constraint here a flaky network inflates every block count in
+  /// the dashboard. Exactly-once on the wire would need a distributed
+  /// transaction per verdict; de-duplicating on arrival is the same guarantee
+  /// for the price of an index.
+  deviceId        String?         @db.VarChar(128)
+  deviceSeq       BigInt?
+
+  /// Opaque, salted-hash identifier for the end user, so abuse can be
+  /// correlated across requests without storing who they are.
+  subjectHash     String?         @db.Char(64)
+  /// Category, never content. Only populated when the tenant opts in.
+  promptExcerpt   String?         @db.VarChar(280)
+
+  /// Time-series scan for the dashboard.
+  @@index([tenantId, occurredAt(sort: Desc)])
+  /// "show me today's blocks" - the most common analyst query.
+  @@index([tenantId, verdict, occurredAt(sort: Desc)])
+  /// Per-rule effectiveness, which drives false-positive tuning.
+  @@index([tenantId, ruleNumber, occurredAt(sort: Desc)])
+  /// Fleet health and bypass-ratio rollups.
+  @@index([deploymentId, occurredAt(sort: Desc)])
+  /// Evasion-campaign hunting: non-zero obfuscation bits are rare, so this is
+  /// a highly selective partial index (declared partial in the raw migration).
+  @@index([tenantId, obfuscationBits])
+  /// Repeat-offender correlation.
+  @@index([tenantId, subjectHash, occurredAt(sort: Desc)])
+  /// Idempotent ingestion of the at-least-once outbox. Must include the
+  /// partition key to be enforceable on a partitioned table.
+  @@unique([tenantId, deviceId, deviceSeq, occurredAt])
+  /// Composite for the same partitioning reason as AuditEvent.
+  @@id([id, occurredAt])
+  @@map("decision_events")
+}
+
+
+// =============================================================================
+// Signed policy distribution
+// =============================================================================
+//
+// The edge engine does not trust the path a policy arrived on - see
+// `src/signing.rs`. It trusts an Ed25519 signature made by a key the device
+// was provisioned with out of band. These three tables are the control-plane
+// half of that scheme.
+//
+// The load-bearing constraint in this section is `PolicyBundle`'s
+// `@@unique([tenantId, sequence])` together with the device-side high-water
+// mark. Signature verification alone proves a bundle is AUTHENTIC; it does
+// nothing about a bundle that is authentic but OLD. An attacker who recorded
+// last quarter's genuinely-signed policy can otherwise pin a fleet to it
+// forever using nothing but valid signatures, which is a complete policy
+// downgrade with no forgery anywhere. The monotonic sequence is what makes
+// "authentic" mean "current".
+
+enum SigningKeyStatus {
+  /// Usable for new bundles.
+  ACTIVE
+  /// Still trusted by deployed devices, but no longer used to sign. The
+  /// normal middle state of a rotation: the new key signs while the old one
+  /// stays acceptable until every device has the new trust store.
+  RETIRED
+  /// Must be rejected even when its signature is valid. Terminal.
+  REVOKED
+}
+
+/// An Ed25519 signer.
+///
+/// **The private key is not in this table and must not be.** `publicKey` is
+/// all the control plane database needs; signing happens in an HSM or KMS
+/// addressed by `kmsKeyRef`. A schema with a `privateKey` column is one
+/// SQL injection away from letting an attacker mint policy for every tenant
+/// in the fleet, which is strictly worse than any single prompt getting
+/// through.
+model SigningKey {
+  id           String           @id @default(uuid()) @db.Uuid
+  tenantId     String           @db.Uuid
+  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// The `key-id` written into every bundle header and matched against the
+  /// device's pinned trust store. Stable and human-meaningful.
+  keyId        String           @db.VarChar(64)
+  /// 32 raw Ed25519 bytes, hex encoded - exactly the form
+  /// `TrustStore::add_key_hex` accepts.
+  publicKey    String           @db.Char(64)
+  /// Opaque handle to the private key in the HSM/KMS. Never key material.
+  kmsKeyRef    String?          @db.VarChar(255)
+
+  status       SigningKeyStatus @default(ACTIVE)
+  /// Why it was revoked. Shown to operators and shipped in the trust-store
+  /// update, because "this key is gone" without a reason gets ignored.
+  revokedAt    DateTime?        @db.Timestamptz(6)
+  revokedById  String?          @db.Uuid
+  revokeReason String?          @db.VarChar(500)
+
+  notBefore    DateTime         @default(now()) @db.Timestamptz(6)
+  notAfter     DateTime         @db.Timestamptz(6)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(6)
+
+  bundles      PolicyBundle[]
+
+  @@unique([tenantId, keyId])
+  /// The rotation dashboard's query: which keys expire soon.
+  @@index([tenantId, status, notAfter])
+  @@map("signing_keys")
+}
+
+/// One signed, immutable artifact as shipped to devices.
+///
+/// Distinct from `PolicyVersion`: a version is the authored content, a bundle
+/// is a specific *signed serialization* of it. They are one-to-many because
+/// re-signing (after a key rotation, or to extend an expiry) must produce a
+/// new signature and a new sequence number without re-authoring the policy -
+/// and because an audit needs to answer "which exact bytes did this device
+/// verify?", not "which policy did someone intend to send".
+model PolicyBundle {
+  id              String        @id @default(uuid()) @db.Uuid
+  tenantId        String        @db.Uuid
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  policyVersionId String        @db.Uuid
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id])
+
+  signingKeyId    String        @db.Uuid
+  signingKey      SigningKey    @relation(fields: [signingKeyId], references: [id])
+
+  /// The `bundle-id` header field.
+  bundleId        String        @db.VarChar(64)
+  /// The anti-rollback counter. Unique per tenant and strictly increasing;
+  /// the device refuses anything at or below its applied high-water mark.
+  sequence        BigInt
+  /// SHA-256 of the payload, as bound into the signed header.
+  payloadSha256   String        @db.Char(64)
+  payloadBytes    Int
+  /// Hex Ed25519 signature, 64 bytes.
+  signature       String        @db.Char(128)
+
+  notBefore       DateTime      @db.Timestamptz(6)
+  /// Every bundle expires. An unbounded validity window means a key
+  /// compromise is permanent rather than an incident with an end date.
+  notAfter        DateTime      @db.Timestamptz(6)
+
+  createdById     String?       @db.Uuid
+  createdAt       DateTime      @default(now()) @db.Timestamptz(6)
+
+  devices         Device[]
+
+  /// The rollback defence, expressed as a database constraint rather than as
+  /// application discipline: two bundles can never share a sequence, so the
+  /// device-side monotonic check has an unambiguous total order to rely on.
+  @@unique([tenantId, sequence])
+  @@unique([tenantId, bundleId])
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([signingKeyId])
+  @@map("policy_bundles")
+}
+
+// =============================================================================
+// Fleet: individual devices
+// =============================================================================
+
+/// One running SDK instance.
+///
+/// `Deployment` is a fleet; this is a member of it. Split out because the
+/// three questions that matter operationally are per-device, not per-fleet:
+/// which bundle is this box actually running, is its audit trail intact, and
+/// has it fallen behind the rest of the fleet.
+model Device {
+  id                   String        @id @default(uuid()) @db.Uuid
+  tenantId             String        @db.Uuid
+  tenant               Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deploymentId         String        @db.Uuid
+  deployment           Deployment    @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  /// Stable per-device identity, provisioned with the trust store. Together
+  /// with `DecisionEvent.deviceSeq` it is the de-duplication key that makes
+  /// the outbox's at-least-once delivery safe to ingest.
+  deviceId             String        @db.VarChar(128)
+  hostname             String?       @db.VarChar(255)
+  sdkVersion           String?       @db.VarChar(32)
+  platform             String?       @db.VarChar(64)
+
+  /// The bundle this device reports having verified and applied.
+  appliedBundleId      String?       @db.Uuid
+  appliedBundle        PolicyBundle? @relation(fields: [appliedBundleId], references: [id])
+  /// The device's own anti-rollback high-water mark, as it reports it.
+  ///
+  /// Worth storing separately from `appliedBundleId`: a device whose applied
+  /// sequence is BELOW the tenant's latest is merely stale, but one that is
+  /// below its own previously reported value has either been re-imaged or is
+  /// being attacked, and those need different responses.
+  appliedSequence      BigInt        @default(0)
+
+  lastSeenAt           DateTime?     @db.Timestamptz(6)
+
+  // --- audit trail integrity, reported by `audit_queue::QueueSnapshot` ----
+  //
+  // Here because the alternative is that a device silently stops recording
+  // violations and nobody finds out until an incident review asks for the
+  // logs. `auditRecordsLost > 0` is an alert, not a metric.
+  auditRecordsOffered  BigInt        @default(0)
+  auditRecordsDelivered BigInt       @default(0)
+  auditRecordsLost     BigInt        @default(0)
+  auditBacklog         BigInt        @default(0)
+  auditDegraded        Boolean       @default(false)
+
+  createdAt            DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime      @updatedAt @db.Timestamptz(6)
+
+  @@unique([tenantId, deviceId])
+  @@index([deploymentId, lastSeenAt(sort: Desc)])
+  /// "which devices are running stale policy" - the rollout dashboard.
+  @@index([tenantId, appliedSequence])
+  /// "which devices have a broken audit trail" - the compliance alert.
+  @@index([tenantId, auditDegraded])
+  @@map("devices")
+}

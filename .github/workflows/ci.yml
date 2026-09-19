@@ -1,0 +1,86 @@
+name: CI
+
+# Runs on every push and pull request. The release workflow only fired on a
+# version tag, which meant nothing validated the code between tags: a broken
+# commit stayed green until somebody cut a release.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust — fmt, test, features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build (no warnings)
+        run: cargo build --release --all-targets
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      # 261 tests: unit, adversarial red-team, cross-module end-to-end, and the
+      # hostile-environment suite (disk full, lock contention, offline backlog).
+      - name: Test suite
+        run: cargo test --release
+
+      # Both optional features must keep compiling. `python` cannot be *linked*
+      # standalone - pyo3's extension-module deliberately leaves the CPython
+      # symbols for the interpreter to resolve at import time - so it is
+      # type-checked here and built for real by the wheel job.
+      - name: Feature — onnx
+        run: cargo check --features onnx
+      - name: Feature — python
+        run: cargo check --features python
+
+  c_abi:
+    name: C ABI — compile and link from C
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Builds the staticlib and links a real C translation unit against it.
+      # A Rust-side test cannot prove the header and the symbols agree; this
+      # can, and it is the check that would have caught the C bindings
+      # silently skipping the PII layer.
+      - name: C conformance suite
+        run: ./examples/c/run.sh
+
+  python:
+    name: Python — lint, format, dashboard security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install tooling
+        run: pip install --quiet black ruff
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Formatting
+        run: black --check .
+
+      # The dashboard renders a security product's audit trail, so it is
+      # security surface in its own right: 33 checks covering static-file
+      # exposure, authentication, the removed write endpoint, read-side
+      # redaction of legacy raw values, and the loopback bind.
+      - name: Dashboard security regression suite
+        run: python3 test_dashboard_security.py

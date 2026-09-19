@@ -1,0 +1,56 @@
+name: Build and Publish Wheels
+
+on:
+  push:
+    tags:
+      - 'v*' # הריצה תקרה רק כשנוסיף תגית גרסה כמו v0.6.1
+
+jobs:
+  # A tag must not be able to ship code that has not been validated. Before
+  # this gate existed the release workflow built wheels straight from the tag
+  # without running a single test.
+  test:
+    name: Validate before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Test suite
+        run: cargo test --release
+      - name: C ABI conformance
+        run: ./examples/c/run.sh
+
+  build-wheels:
+    name: Build wheels on ${{ matrix.os }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Build Wheels with Maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --features python -o wheels
+          
+      - name: Upload Wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: wheels/*

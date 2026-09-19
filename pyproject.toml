@@ -1,0 +1,68 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "edgeguard-sdk"
+version = "0.7.0"
+description = "On-device AI guardrails engine (Rust core, Python bindings via PyO3)"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+[tool.maturin]
+module-name = "edgeguard"
+features = ["python"]
+# =============================================================================
+# Python tooling
+# =============================================================================
+# Pinned here rather than left to each developer's defaults, so `ruff check`
+# and `black --check` mean the same thing locally and in CI.
+#
+# Line length matches rustfmt's default (100) rather than black's (88): this
+# repository is majority Rust, and one width across both languages keeps
+# side-by-side diffs and split-pane review aligned.
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+extend-exclude = "/(\\.venv|target)/"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+exclude = [".venv", "target", "dist", "build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "BLE", "RUF", "PL"]
+ignore = [
+    # Line length is the formatter's job; flagging it here too is noise.
+    "E501",
+
+    # --- rules that are actively wrong for THIS codebase ------------------
+    #
+    # RUF001/2/3 flag "ambiguous" Unicode - Cyrillic homoglyphs, fullwidth
+    # forms, zero-width characters. This is a guardrail engine: those
+    # characters are the red-team corpora. `comprehensive_test.py` alone trips
+    # RUF001 111 times, every one of them a deliberate evasion payload the
+    # de-obfuscator is tested against. Enforcing this rule would mean deleting
+    # the test data.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+
+    # Comparing against a literal status code or violation code is the
+    # clearest way to write an assertion. 25 hits, all in test scripts.
+    "PLR2004",
+
+    # A router with one `return` per route is good structure, not a smell.
+    "PLR0911",
+
+    # The benchmark and audit demos are linear scripts by design; splitting
+    # them into helpers would make them harder to read, not easier.
+    "PLR0915",
+    "PLW0603",
+]

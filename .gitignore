@@ -1,0 +1,72 @@
+# --- build output ----------------------------------------------------------
+/target
+target/
+*.dylib
+*.so
+*.dll
+*.a
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+
+# --- local state that must never be committed ------------------------------
+#
+# The audit trail is the important one. It is written by the engine at runtime,
+# it accumulates one row per violation, and historically those rows contained
+# the matched value rather than a category - a copy of this file in the tree
+# was found holding raw `sk-` API keys and a custom pattern that was itself a
+# secret. Current builds persist only category placeholders, but the file is
+# still local operational state and still has no business in version control.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+native_edge_queue.db*
+*.seq            # policy bundle anti-rollback high-water marks
+
+# --- archives --------------------------------------------------------------
+#
+# Release archives are build output. One found in this tree
+# (`edgeguard_v0.6.1_full.zip`) contained a full copy of the audit database,
+# so a `.gitignore` covering the loose `.db` file alone would still have
+# committed the secrets inside the zip.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# --- credentials and key material ------------------------------------------
+#
+# The signing scheme in src/signing.rs is only as good as the trust store, and
+# the private half must never be on disk here at all. These patterns are a
+# backstop, not a substitute for keeping keys in an HSM/KMS.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*trust-store*
+*trust_store*
+secrets.*
+credentials.*
+
+# --- tool caches -----------------------------------------------------------
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# --- editor / OS -----------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
