@@ -59,6 +59,11 @@ pub const INJECTION: u32 = 101;
 pub const CUSTOM_PATTERN: u32 = 103;
 /// Grey-area prompt that the semantic tier could not be consulted about.
 pub const GREY_NO_SEMANTIC: u32 = 150;
+/// Grey-area prompt parked for the slow path. Distinct from
+/// `GREY_NO_SEMANTIC`: that means "nobody will ever answer this", this means
+/// "the answer is coming later". A SIEM must be able to tell a gap from a
+/// pending result.
+pub const GREY_DEFERRED: u32 = 151;
 /// The semantic tier returned a verdict.
 pub const SEMANTIC: u32 = 160;
 

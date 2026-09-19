@@ -80,6 +80,9 @@ extern "C" {
 #define EDGEGUARD_STAGE_TIER2_FAILED          8
 #define EDGEGUARD_STAGE_TIER2_SHED            9
 #define EDGEGUARD_STAGE_INTERNAL_ERROR       10
+/* Appended, not inserted: these values reach SIEM rules, so renumbering an
+ * existing stage would silently relabel historical events. */
+#define EDGEGUARD_STAGE_TIER2_DEFERRED       11
 
 /* --- obfuscation bits (see edgeguard_obfuscation_name) ------------------ */
 #define EDGEGUARD_OBF_PERCENT_ENCODED      (1u << 0)

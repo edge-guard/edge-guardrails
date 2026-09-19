@@ -100,6 +100,10 @@ pub const EDGEGUARD_STAGE_TIER2_UNAVAILABLE: c_int = 7;
 pub const EDGEGUARD_STAGE_TIER2_FAILED: c_int = 8;
 pub const EDGEGUARD_STAGE_TIER2_SHED: c_int = 9;
 pub const EDGEGUARD_STAGE_INTERNAL_ERROR: c_int = 10;
+/// Appended as 11 rather than inserted next to the other TIER2 stages: these
+/// values reach SIEM rules, and renumbering an existing stage would silently
+/// relabel historical events.
+pub const EDGEGUARD_STAGE_TIER2_DEFERRED: c_int = 11;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -397,6 +401,7 @@ fn to_c(d: &crate::tier::Decision) -> edgeguard_decision {
         DecidedBy::Tier1Deterministic { .. } => (EDGEGUARD_STAGE_TIER1_DETERMINISTIC, 0),
         DecidedBy::Tier1NoSignal => (EDGEGUARD_STAGE_TIER1_NO_SIGNAL, 0),
         DecidedBy::Tier2Model { .. } => (EDGEGUARD_STAGE_TIER2_MODEL, 0),
+        DecidedBy::Tier2Deferred => (EDGEGUARD_STAGE_TIER2_DEFERRED, 0),
         DecidedBy::Tier2Unavailable => (EDGEGUARD_STAGE_TIER2_UNAVAILABLE, 0),
         DecidedBy::Tier2Failed { .. } => (EDGEGUARD_STAGE_TIER2_FAILED, 0),
         DecidedBy::Tier2ShedByBreaker => (EDGEGUARD_STAGE_TIER2_SHED, 0),
@@ -442,6 +447,7 @@ pub extern "C" fn edgeguard_decided_by_name(stage: c_int) -> *const c_char {
         EDGEGUARD_STAGE_TIER2_UNAVAILABLE => "tier2_unavailable\0",
         EDGEGUARD_STAGE_TIER2_FAILED => "tier2_failed\0",
         EDGEGUARD_STAGE_TIER2_SHED => "tier2_shed_by_breaker\0",
+        EDGEGUARD_STAGE_TIER2_DEFERRED => "tier2_deferred\0",
         EDGEGUARD_STAGE_INTERNAL_ERROR => "internal_error\0",
         _ => "unknown\0",
     };
