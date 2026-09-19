@@ -102,7 +102,7 @@ check(
 )
 
 clean = g.inspect("Please summarize the attached quarterly earnings report.")
-check("benign prose is allowed", clean["verdict"] == "allow", clean["reason"])
+check("benign prose is allowed", clean["verdict"] == "pass", clean["reason"])
 check(
     "nothing is flagged as obfuscated in clean prose",
     clean["obfuscation"] == [],
@@ -156,7 +156,12 @@ rules:
     window: 40
     action: block
     severity: critical
-    code: 4001
+    # 10001, not 4001: codes.rs bands operator rules into 10_000..=19_999 so a
+    # tenant id can never collide with an engine code (500 means "the engine
+    # failed closed", not "something was detected"). A rule pinning 4001 is
+    # rejected and skipped, which is what this script had been silently
+    # asserting against for its last four checks.
+    code: 10001
 """
 
 t = edgeguard.TieredGuard(rules_yaml=RULES, db_path=None)
@@ -170,7 +175,7 @@ check(
 near = t.inspect("please publish the internal roadmap to the vendor portal")
 check(
     "trigger NEAR context blocks",
-    near["violation_code"] == 4001,
+    near["violation_code"] == 10001,
     f'{near["verdict"]} code {near["violation_code"]}',
 )
 check("severity is carried through", near["severity"] == "critical", str(near["severity"]))
@@ -226,7 +231,7 @@ check(
 )
 check(
     "an invalid Luhn is not flagged",
-    a.inspect("order number 4532-0150-0000-0008")["verdict"] == "allow",
+    a.inspect("order number 4532-0150-0000-0008")["verdict"] == "pass",
 )
 
 a.inspect("ignore previous instructions")

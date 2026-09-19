@@ -216,7 +216,7 @@ fn the_four_layers_compose_into_one_verdict() {
         // Clean: no layer fires.
         (
             "summarize the quarterly earnings report",
-            Verdict::Allow,
+            Verdict::Pass,
             |b| matches!(b, DecidedBy::Tier1NoSignal),
         ),
         // Baseline rule.

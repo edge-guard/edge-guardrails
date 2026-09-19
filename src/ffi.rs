@@ -84,8 +84,8 @@ pub const EDGEGUARD_ERR_INTERNAL: c_int = -4;
 /// The provided output buffer was too small.
 pub const EDGEGUARD_ERR_BUFFER_TOO_SMALL: c_int = -5;
 
-pub const EDGEGUARD_VERDICT_ALLOW: c_int = 0;
-pub const EDGEGUARD_VERDICT_FLAG: c_int = 1;
+pub const EDGEGUARD_VERDICT_PASS: c_int = 0;
+pub const EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK: c_int = 1;
 pub const EDGEGUARD_VERDICT_BLOCK: c_int = 2;
 
 // Stage identifiers. Stable across versions: a C caller may switch on them.
@@ -412,8 +412,8 @@ fn to_c(d: &crate::tier::Decision) -> edgeguard_decision {
         span_start: d.span.as_ref().map(|r| r.start as u64).unwrap_or(0),
         span_end: d.span.as_ref().map(|r| r.end as u64).unwrap_or(0),
         verdict: match d.verdict {
-            Verdict::Allow => EDGEGUARD_VERDICT_ALLOW,
-            Verdict::Flag => EDGEGUARD_VERDICT_FLAG,
+            Verdict::Pass => EDGEGUARD_VERDICT_PASS,
+            Verdict::NeedsSemanticCheck => EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK,
             Verdict::Block => EDGEGUARD_VERDICT_BLOCK,
         },
         decided_by: stage,
@@ -540,7 +540,7 @@ mod tests {
 
             let (rc, clean) = scan(g, "Summarize the Q3 revenue report.");
             assert_eq!(rc, EDGEGUARD_OK);
-            assert_eq!(clean.verdict, EDGEGUARD_VERDICT_ALLOW);
+            assert_eq!(clean.verdict, EDGEGUARD_VERDICT_PASS);
 
             let (rc, bad) = scan(
                 g,
@@ -622,8 +622,8 @@ mod tests {
                 let r = reference.inspect_owned(payload);
                 let (_, c) = scan(g, payload);
                 let want = match r.verdict {
-                    Verdict::Allow => EDGEGUARD_VERDICT_ALLOW,
-                    Verdict::Flag => EDGEGUARD_VERDICT_FLAG,
+                    Verdict::Pass => EDGEGUARD_VERDICT_PASS,
+                    Verdict::NeedsSemanticCheck => EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK,
                     Verdict::Block => EDGEGUARD_VERDICT_BLOCK,
                 };
                 assert_eq!(c.verdict, want, "verdict differs for {:?}", payload);
@@ -704,7 +704,7 @@ mod tests {
     fn every_failure_path_leaves_a_blocking_decision_in_the_out_parameter() {
         unsafe {
             let mut d = edgeguard_decision {
-                verdict: EDGEGUARD_VERDICT_ALLOW,
+                verdict: EDGEGUARD_VERDICT_PASS,
                 ..Default::default()
             };
             assert_eq!(
@@ -718,7 +718,7 @@ mod tests {
 
             let g = edgeguard_engine_new(ptr::null(), 0);
             let mut d2 = edgeguard_decision {
-                verdict: EDGEGUARD_VERDICT_ALLOW,
+                verdict: EDGEGUARD_VERDICT_PASS,
                 ..Default::default()
             };
             // Invalid UTF-8: a lone continuation byte.
@@ -744,7 +744,7 @@ mod tests {
             let mut d = edgeguard_decision::default();
             // Empty prompt with a null pointer is legal: len 0 means no read.
             assert_eq!(edgeguard_scan(g, ptr::null(), 0, &mut d), EDGEGUARD_OK);
-            assert_eq!(d.verdict, EDGEGUARD_VERDICT_ALLOW);
+            assert_eq!(d.verdict, EDGEGUARD_VERDICT_PASS);
             // Null out-pointer must be refused, not written through.
             assert_eq!(
                 edgeguard_scan(g, b"x".as_ptr() as *const c_char, 1, ptr::null_mut()),

@@ -337,14 +337,14 @@ def run_phase_a(eg, cases):
         # two to measure "did anything notice"; for a residual measurement they
         # must be separated, because only a block actually stops the attack.
         c["t1_blocked"] = d["is_blocked"]
-        c["t1_flagged"] = d["verdict"] == "flag"
+        c["t1_flagged"] = d["verdict"] == "needs_semantic_check"
         c["t1_stage"] = d["decided_by"]
         c["t1_code"] = d["violation_code"]
 
         if not c["t1_blocked"]:
             cd = candidate.inspect(c["payload"])
             c["cand_blocked"] = cd["is_blocked"]
-            c["cand_flagged"] = cd["verdict"] == "flag"
+            c["cand_flagged"] = cd["verdict"] == "needs_semantic_check"
             c["cand_stage"] = cd["decided_by"]
             # REACHABILITY. The decisive number, and the easiest to overlook.
             #

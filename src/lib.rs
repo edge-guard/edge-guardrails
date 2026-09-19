@@ -1580,8 +1580,8 @@ fn decision_to_dict<'py>(
     dict.set_item(
         "verdict",
         match d.verdict {
-            Verdict::Allow => "allow",
-            Verdict::Flag => "flag",
+            Verdict::Pass => "pass",
+            Verdict::NeedsSemanticCheck => "needs_semantic_check",
             Verdict::Block => "block",
         },
     )?;
@@ -1605,12 +1605,16 @@ fn decision_to_dict<'py>(
         }
         DecidedBy::Tier1NoSignal => ("tier1_no_signal", None, None, None),
         DecidedBy::Tier2Model { model } => ("tier2_model", None, None, Some(model.clone())),
+        DecidedBy::Tier2Deferred => ("tier2_deferred", None, None, None),
         DecidedBy::Tier2Unavailable => ("tier2_unavailable", None, None, None),
         DecidedBy::Tier2Failed { error } => ("tier2_failed", None, None, Some(error.clone())),
         DecidedBy::Tier2ShedByBreaker => ("tier2_shed_by_breaker", None, None, None),
         DecidedBy::InternalError => ("internal_error", None, None, None),
     };
     dict.set_item("decided_by", stage)?;
+    // What to serve while the slow path has not answered. `None` on every
+    // path that reached a real verdict - see `tier::Decision::interim`.
+    dict.set_item("interim", d.interim.map(|i| i.as_str()))?;
     dict.set_item("rule_id", rule_id)?;
     dict.set_item("severity", severity)?;
     dict.set_item("detail", detail)?;

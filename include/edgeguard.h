@@ -64,9 +64,14 @@ extern "C" {
 #define EDGEGUARD_ERR_BUFFER_TOO_SMALL  (-5)
 
 /* --- verdicts ----------------------------------------------------------- */
-#define EDGEGUARD_VERDICT_ALLOW  0
-#define EDGEGUARD_VERDICT_FLAG   1  /* suspicious; host decides policy */
-#define EDGEGUARD_VERDICT_BLOCK  2
+/* Renamed at 0.8 with NO aliases: EDGEGUARD_VERDICT_ALLOW and
+ * EDGEGUARD_VERDICT_FLAG are gone. The numeric values are unchanged, so a
+ * host that compared against literals still behaves correctly - but one that
+ * used the old names will fail to compile, which is the intent. A silently
+ * renamed verdict is worse than a build error. */
+#define EDGEGUARD_VERDICT_PASS                  0
+#define EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK  1  /* host decides policy */
+#define EDGEGUARD_VERDICT_BLOCK                 2
 
 /* --- deciding stage ----------------------------------------------------- */
 #define EDGEGUARD_STAGE_SIZE_GUARD            0

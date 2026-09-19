@@ -163,7 +163,7 @@ def evaluate():
 
     def tiered_blocks(p):
         d = tiered.inspect(p)
-        return d["is_blocked"] or d["verdict"] == "flag"
+        return d["is_blocked"] or d["verdict"] == "needs_semantic_check"
 
     print("=" * 78)
     print("ADAPTIVE ADVERSARIAL EVALUATION - EdgeGuard detection layer")
