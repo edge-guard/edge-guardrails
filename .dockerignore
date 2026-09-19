@@ -1,0 +1,37 @@
+# Keep the build context small and, more importantly, keep host artifacts and
+# secrets out of it. Anything listed here cannot be COPYed into a layer even
+# by accident.
+
+# Build output. Without this the host's target/ (hundreds of MB, and a debug
+# build compiled against a different libc) is uploaded to the daemon and can
+# be copied into the image.
+target/
+wheels/
+dist/
+*.egg-info/
+
+# Local Python environments - these contain a compiled edgeguard built for the
+# HOST platform, which must never end up in a Linux image.
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# Audit databases. These hold the audit trail and are exactly what the
+# pre-hardening dashboard leaked over HTTP; they must never be baked into a
+# layer, where they would persist in the image history even if later deleted.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# VCS and CI
+.git/
+.github/
+.gitignore
+
+# Developer scratch that has no business in an image
+*.log
+.DS_Store

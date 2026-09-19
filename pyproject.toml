@@ -6,16 +6,49 @@ build-backend = "maturin"
 name = "edgeguard-sdk"
 version = "0.7.0"
 description = "On-device AI guardrails engine (Rust core, Python bindings via PyO3)"
-requires-python = ">=3.8"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+keywords = [
+    "llm", "guardrails", "prompt-injection", "pii", "security",
+    "edge", "on-device", "rust",
+]
+# No runtime dependencies, deliberately. The engine is a compiled extension;
+# `requests` is needed only by examples/ollama_stream_guard.py and belongs in
+# the optional group below, not in what every install pulls.
+dependencies = []
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
+
+[project.optional-dependencies]
+examples = ["requests>=2.31"]
+dev = ["maturin>=1.7,<2.0", "ruff", "black", "pytest"]
+
+[project.urls]
+Homepage = "https://github.com/shmuelhelman/edgeguard-sdk"
+Repository = "https://github.com/shmuelhelman/edgeguard-sdk"
+Issues = "https://github.com/shmuelhelman/edgeguard-sdk/issues"
 
 [tool.maturin]
 module-name = "edgeguard"
 features = ["python"]
+# Ship the shipped regex layer inside the wheel. Without it a `pip install`
+# has no policy.yaml on disk, and `EdgeGuard(policy_path=...)` - which is what
+# enables the API-key and secret patterns - has nothing to point at.
+include = [{ path = "policy.yaml", format = ["sdist", "wheel"] }]
 # =============================================================================
 # Python tooling
 # =============================================================================
