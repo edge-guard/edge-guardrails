@@ -72,7 +72,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::deobfuscate::{normalize, Normalized, NormalizerConfig, ObfuscationFlags};
+use crate::deobfuscate::{
+    encoded_lanes, normalize, Normalized, NormalizerConfig, ObfuscationFlags,
+};
 use crate::graph::{Action, GraphMatch, RuleGraph, ScanScratch, Severity};
 use crate::semantic::{SemanticScore, SemanticScorer};
 use crate::SecurityEngine;
@@ -250,6 +252,9 @@ pub struct TierConfig {
     /// hide does not occur in benign traffic; it means the payload evaded
     /// the literals, which is precisely what Tier 2 is for.
     pub grey_on_obfuscation_layers: u32,
+    /// Budget for base64 / raw-hex lane extraction. `max_lanes: 0` disables
+    /// it entirely.
+    pub lanes: crate::deobfuscate::LaneConfig,
     /// Target latency for one Tier 2 inference.
     pub tier2_budget: Duration,
     /// Skip Tier 2 for grey inputs larger than this. Transformer cost is
@@ -272,6 +277,7 @@ impl Default for TierConfig {
             normalizer: NormalizerConfig::injection(),
             block_on_hostile_obfuscation: true,
             grey_on_obfuscation_layers: 3,
+            lanes: crate::deobfuscate::LaneConfig::default(),
             separator_split_junctions: 1,
             tier2_budget: Duration::from_millis(5),
             tier2_max_input_bytes: 16 * 1024,
@@ -740,6 +746,55 @@ impl TieredEngine {
             }
         }
 
+        // --- [3.5] encoded lanes -------------------------------------------
+        //
+        // Base64 and raw hex cannot be folded into the normalized text the
+        // way percent escapes are: the decoded bytes coexist with the prose
+        // that carries them, so they are scanned as their own buffers and the
+        // verdict is attributed back to the encoded region.
+        //
+        // This runs only after every deterministic check above has declined
+        // to block. A payload that is already caught in the clear should
+        // never pay for a decode.
+        let mut lane_grey = false;
+        if self.cfg.lanes.max_lanes > 0 {
+            for lane in encoded_lanes(prompt, &self.cfg.lanes, &self.cfg.normalizer) {
+                let Some(m) = self.graph.evaluate(&lane.decoded, sc) else {
+                    continue;
+                };
+                match m.action {
+                    Action::Block => {
+                        self.metrics.tier1_blocks.fetch_add(1, Ordering::Relaxed);
+                        return Decision {
+                            obfuscation: flags,
+                            // The whole encoded run, not a slice of it: half a
+                            // base64 blob is still live payload and no longer
+                            // even decodes.
+                            span: Some(lane.src.clone()),
+                            ..Decision::deterministic(
+                                Verdict::Block,
+                                m.code,
+                                Cow::Owned(format!(
+                                    "Prompt Injection - {} payload decoded; matched rule '{}'",
+                                    lane.kind.as_str(),
+                                    self.graph.rule_name(&m)
+                                )),
+                                DecidedBy::Tier1Rule {
+                                    rule_id: m.rule_id,
+                                    severity: m.severity,
+                                },
+                            )
+                        };
+                    }
+                    // A Flag inside a decoded lane is the same signal as a
+                    // Flag in the clear: not conclusive, so hand it to the
+                    // semantic tier rather than deciding here.
+                    Action::Flag => lane_grey = true,
+                    Action::Allow => {}
+                }
+            }
+        }
+
         // --- [4] is this grey at all? --------------------------------------
         let flagged = verdict_match.as_ref().filter(|m| m.action == Action::Flag);
         let layered = flags.layers() >= self.cfg.grey_on_obfuscation_layers;
@@ -769,7 +824,7 @@ impl TieredEngine {
             return d;
         }
 
-        if flagged.is_none() && !layered {
+        if flagged.is_none() && !layered && !lane_grey {
             self.metrics.tier1_clean.fetch_add(1, Ordering::Relaxed);
             return Decision {
                 obfuscation: flags,
