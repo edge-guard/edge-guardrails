@@ -292,7 +292,7 @@ pub enum SemanticMode {
     ///
     /// Trades enforcement for latency: triage stays in microseconds and the
     /// semantic answer lands out of band. The caller must still serve
-    /// something now, which is what `Decision::interim` carries. Honest name
+    /// something now, and `Decision::interim` carries it. Honest name
     /// for what this produces on the current request is telemetry, not a
     /// guardrail - it is the right trade for a fast-path triage router, and
     /// the wrong one for a tool-calling agent with shell access.

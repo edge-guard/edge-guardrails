@@ -211,7 +211,10 @@ impl SlowPathWorker {
     /// Returns `claimed: 0` when the queue is empty, which is how
     /// `run_forever` knows to idle.
     pub fn run_once(&mut self) -> Result<SlowPathStats, DeferredError> {
-        let items = self.queue.claim(self.cfg.batch_size)?;
+        // `.max(1)` mirrors the channel-depth clamp in `deferred`: a zero
+        // batch size otherwise makes the worker a permanent no-op that never
+        // says why.
+        let items = self.queue.claim(self.cfg.batch_size.max(1))?;
         let mut stats = SlowPathStats {
             claimed: items.len() as u64,
             ..SlowPathStats::default()
@@ -246,13 +249,13 @@ impl SlowPathWorker {
                 // the two, a visible row is recoverable but a swallowed one is
                 // not.
                 self.queue.release(item.id)?;
-                self.audit(item, Outcome::Retried, 0.0, started.elapsed());
+                self.audit(Outcome::Retried, 0.0, started.elapsed());
                 return Ok(Outcome::Retried);
             }
             Err(_) => (Outcome::Poison, 0.0),
         };
 
-        self.audit(item, outcome, malicious, started.elapsed());
+        self.audit(outcome, malicious, started.elapsed());
         // Deleted, not marked done. The prompt stops existing once the work
         // does - see the deferred module's retention rules.
         self.queue.complete(item.id)?;
@@ -260,7 +263,7 @@ impl SlowPathWorker {
     }
 
     /// Write the classification - and only the classification - to the trail.
-    fn audit(&self, item: &DeferredItem, outcome: Outcome, malicious: f32, took: Duration) {
+    fn audit(&self, outcome: Outcome, malicious: f32, took: Duration) {
         let Some(audit) = self.audit.as_deref() else {
             return;
         };
@@ -273,7 +276,6 @@ impl SlowPathWorker {
             "tier2_deferred_scored",
             took.as_micros() as u64,
         );
-        let _ = item;
     }
 
     /// Drain until `stop` is set, idling when the queue is empty.
@@ -603,6 +605,27 @@ mod tests {
         assert!(retried >= 1, "item was dropped without any retry");
         let check = DeferredWorker::open(&path, DeferredConfig::default()).unwrap();
         assert_eq!(check.backlog().unwrap(), 0, "poison row was left behind");
+        drop(q);
+    }
+
+    #[test]
+    fn a_zero_batch_size_still_makes_progress() {
+        // A misconfigured worker that silently processes nothing forever is
+        // worse than one that errors: nothing in the metrics distinguishes it
+        // from an empty queue.
+        let path = tmp("zerobatch");
+        let _g = Tmp(path.clone());
+        let q = park(&path, &["grey"]);
+        let w = DeferredWorker::open(&path, DeferredConfig::default()).unwrap();
+        let mut sp = SlowPathWorker::new(
+            w,
+            Scripted::new(0.1),
+            SlowPathConfig {
+                batch_size: 0,
+                ..SlowPathConfig::default()
+            },
+        );
+        assert_eq!(sp.run_once().unwrap().claimed, 1);
         drop(q);
     }
 

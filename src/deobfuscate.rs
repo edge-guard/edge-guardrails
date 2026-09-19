@@ -723,7 +723,7 @@ fn invisible_class(c: char) -> Option<u16> {
 /// printable ASCII `0x20..=0x7E`, shifted by `0xE0000` and rendered as
 /// nothing. They are a **substitution cipher**, not whitespace.
 ///
-/// Treating them as invisible - which is what this module did until now -
+/// Treating them as invisible - as this module did until now -
 /// *deletes the attacker's payload before anything can read it*. A prompt
 /// carrying a tag-encoded "ignore all previous instructions" normalized to
 /// just its visible prefix, and the engine allowed it having never seen the

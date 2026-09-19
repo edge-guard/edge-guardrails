@@ -18,12 +18,12 @@
 //! value". No prompt text can reach it, by construction, because the outbox
 //! is shipped over the network.
 //!
-//! This queue is the exact inverse. A semantic model cannot score a category
-//! - it needs the prompt itself - so **this store holds raw prompt text**,
-//! which makes it the most sensitive file the SDK writes. Putting deferred
-//! work in the audit outbox would place user prompts in a queue whose whole
-//! purpose is transmission. That is not a schema change; it is a data
-//! incident with a migration attached.
+//! This queue is the exact inverse. A semantic model cannot score a category;
+//! it needs the prompt itself, so **this store holds raw prompt text**, which
+//! makes it the most sensitive file the SDK writes. Putting deferred work in
+//! the audit outbox would place user prompts in a queue whose whole purpose
+//! is transmission. That is a data incident with a migration attached, not a
+//! schema change.
 //!
 //! So the two are kept apart, and the separation is **structural rather than
 //! documentary**:
@@ -120,6 +120,19 @@ pub fn default_db_path() -> PathBuf {
 /// extension, no file name, or an existing `.deferred` stem.
 pub fn beside_audit_db(audit_db: impl AsRef<Path>) -> PathBuf {
     let p = audit_db.as_ref();
+
+    // A trailing separator means the caller named a directory, so put the
+    // file inside it. Without this, "/var/lib/eg/" produced the sibling
+    // "/var/lib/eg.deferred.db" while "." and ".." correctly produced a file
+    // inside - `file_stem` returns None for the latter two and Some("eg")
+    // for the former.
+    if p.as_os_str()
+        .to_str()
+        .is_some_and(|s| s.ends_with(std::path::MAIN_SEPARATOR) || s.ends_with('/'))
+    {
+        return p.join(DEFAULT_DB_FILENAME);
+    }
+
     let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
         // No usable file name (root, "..", a bare separator). Fall back to a
         // fixed name inside whatever directory was given rather than
@@ -769,18 +782,10 @@ fn sweep(
     if n > 0 {
         stats.expired.fetch_add(n as u64, Ordering::Relaxed);
     }
-    enforce_backlog_conn(conn, cfg, stats)
+    enforce_backlog(conn, cfg, stats)
 }
 
 fn enforce_backlog(
-    conn: &mut Connection,
-    cfg: &DeferredConfig,
-    stats: &DeferredStats,
-) -> Result<(), rusqlite::Error> {
-    enforce_backlog_conn(conn, cfg, stats)
-}
-
-fn enforce_backlog_conn(
     conn: &Connection,
     cfg: &DeferredConfig,
     stats: &DeferredStats,
@@ -886,6 +891,8 @@ mod tests {
             "already.deferred.db",
             "/",
             "..",
+            ".",
+            "/var/lib/eg/",
             "",
         ] {
             let out = beside_audit_db(input);
@@ -910,6 +917,12 @@ mod tests {
         assert_eq!(
             beside_audit_db("no_extension"),
             PathBuf::from("no_extension.deferred.db")
+        );
+        // Trailing separator means directory: the file goes inside it, not
+        // beside it.
+        assert_eq!(
+            beside_audit_db("/var/lib/eg/"),
+            PathBuf::from("/var/lib/eg").join(DEFAULT_DB_FILENAME)
         );
     }
 
