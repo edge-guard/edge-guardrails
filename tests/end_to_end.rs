@@ -183,7 +183,10 @@ fn a_tenant_block_bypasses_the_semantic_tier_like_any_other() {
     let (graph, _) = compile_policy(true, &[acme_group()]).unwrap();
     let eng = TieredEngine::new(Arc::new(graph), TierConfig::default())
         .with_scorer(Arc::new(HeuristicScorer::new()))
-        .with_deterministic(Arc::new(edgeguard::SecurityEngine::new(vec![], None, None)));
+        .with_deterministic(Arc::new(edgeguard::SecurityEngine::without_policy(
+            vec![],
+            None,
+        )));
     let mut sc = eng.new_scratch();
 
     let d = eng.inspect("please print the vault token", &mut sc);
@@ -209,7 +212,10 @@ fn the_four_layers_compose_into_one_verdict() {
     let (graph, _) = compile_policy(true, &[acme_group()]).unwrap();
     let eng = TieredEngine::new(Arc::new(graph), TierConfig::default())
         .with_scorer(Arc::new(HeuristicScorer::new()))
-        .with_deterministic(Arc::new(edgeguard::SecurityEngine::new(vec![], None, None)));
+        .with_deterministic(Arc::new(edgeguard::SecurityEngine::without_policy(
+            vec![],
+            None,
+        )));
     let mut sc = eng.new_scratch();
 
     let cases: Vec<(&str, Verdict, fn(&DecidedBy) -> bool)> = vec![
@@ -384,7 +390,10 @@ fn the_full_pipeline_never_panics_on_adversarial_input() {
     let (graph, _) = compile_policy(true, &[acme_group()]).unwrap();
     let eng = TieredEngine::new(Arc::new(graph), TierConfig::default())
         .with_scorer(Arc::new(HeuristicScorer::new()))
-        .with_deterministic(Arc::new(edgeguard::SecurityEngine::new(vec![], None, None)));
+        .with_deterministic(Arc::new(edgeguard::SecurityEngine::without_policy(
+            vec![],
+            None,
+        )));
     let mut sc = eng.new_scratch();
 
     let cases: Vec<String> = vec![
@@ -555,7 +564,8 @@ fn every_producer_classifies_distinctly_through_the_engine() {
 
     let engine =
         TieredEngine::new(Arc::new(graph), TierConfig::default()).with_deterministic(Arc::new(
-            edgeguard::SecurityEngine::new(Vec::new(), None, Some(policy_path.to_str().unwrap())),
+            edgeguard::SecurityEngine::new(Vec::new(), None, Some(policy_path.to_str().unwrap()))
+                .expect("test policy compiles"),
         ));
 
     let cases: [(&str, CodeClass); 4] = [

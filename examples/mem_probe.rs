@@ -72,7 +72,7 @@ fn main() {
         }
         "sanitize_huge" => {
             // 64 MB -- scan() would refuse this at 2 MB; sanitize() has no guard
-            let eng = SecurityEngine::new(vec![], None, None);
+            let eng = SecurityEngine::without_policy(vec![], None);
             let s = "card 4532-0150-0000-0007 ".repeat(64 * 1024 * 1024 / 25);
             println!("input={} MB", s.len() / 1_048_576);
             let t = Instant::now();

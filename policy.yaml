@@ -1,13 +1,39 @@
 version: "1.0"
 rules:
+  # DISABLED: dead weight, not a detection.
+  #
+  # `do_scan` detects PII and MASKS it before the policy layer runs, so by the
+  # time this regex is evaluated an address has already become `[EMAIL]` and
+  # been reported by the built-in detector as code 303 with a placeholder.
+  # This rule can therefore essentially never fire, and on the one path where
+  # it could it would be strictly worse - a policy hit reports the rule id,
+  # the built-in reports `EMAIL_ADDRESS_REDACTED`.
+  #
+  # The embedded default is strictly additive: every rule in it must catch
+  # something the compiled-in detectors do not.
   - id: 1
     name: "PII - Email Detection"
-    enabled: true
+    enabled: false
     pattern: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
 
+  # DISABLED, and it must stay that way while these rules are the compiled-in
+  # default (see `DEFAULT_POLICY_YAML` in src/lib.rs).
+  #
+  # This pattern is a bare 13-16 digit run with NO checksum. The built-in
+  # detector already finds cards at code 301 and validates them with Luhn, so
+  # this rule adds no detection a real card was missing - it only adds false
+  # positives on every other long digit run: order numbers, invoice ids,
+  # tracking numbers, account references.
+  #
+  #   "my card is 4532-0150-0000-0007"   -> 301 with or without this rule
+  #   "order number 4532-0150-0000-0008" -> passes without it, 20002 with it
+  #
+  # That was tolerable while the policy layer was opt-in and rarely loaded. It
+  # is not tolerable as the default every `pip install` gets. Re-enable it only
+  # with a Luhn-validating pattern, or not at all.
   - id: 2
     name: "Financial - Credit Card Detection"
-    enabled: true
+    enabled: false
     pattern: "\\b(?:\\d[ -]*?){13,16}\\b"
 
   - id: 3

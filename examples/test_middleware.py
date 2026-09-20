@@ -48,12 +48,53 @@ class GuardrailViolation(Exception):
         super().__init__(f"{self.reason} (code {self.code})")
 
 
+class GuardrailQuarantine(GuardrailViolation):
+    """The engine declined to decide. This prompt is NOT cleared.
+
+    Distinct from `GuardrailViolation` so an application can route these
+    somewhere other than a flat refusal - a stricter model, a human queue, or
+    the same answer with the agent's tool permissions withdrawn - without
+    being able to confuse "the engine did not clear this" with "the engine
+    cleared this".
+    """
+
+
 def guard_prompt(guard: "edgeguard.TieredGuard", prompt: str) -> dict:
-    """Inspect an inbound prompt. Raises on a block, returns the verdict."""
+    """Inspect an inbound prompt. Returns the verdict only if it PASSED.
+
+    # Gate on `pass`, never on `is_blocked`
+
+    There are three verdicts and only one of them clears a prompt:
+
+        pass                  -> forward it
+        needs_semantic_check  -> the fast path deliberately did NOT decide
+        block                 -> refuse
+
+    This function used to read `if d["is_blocked"]: raise`. That is a bypass,
+    because `is_blocked` is true only for `block`. Everything the router
+    routed to `needs_semantic_check` - the Tier 2 grey band, and every path
+    where the semantic tier could not answer - came back with
+    `is_blocked == False` and was forwarded to the model verbatim.
+
+    `d["interim"]` is the SDK telling you what it thinks you should serve
+    while a real answer is still outstanding: "serve", "serve_and_mark" or
+    "refuse". Dropping it on the floor, as this example also used to, throws
+    away the deployment's own configured risk posture.
+    """
     d = guard.inspect(prompt)
+
+    if d["verdict"] == "pass":
+        return d
     if d["is_blocked"]:
         raise GuardrailViolation(d)
-    return d
+
+    # needs_semantic_check. Not cleared. This example refuses unless the
+    # engine's own interim disposition says to serve it and mark it, which is
+    # what `FallbackPolicy::FailClosedFlag` - the default - asks for.
+    if d.get("interim") == "serve_and_mark":
+        d["quarantined"] = True
+        return d
+    raise GuardrailQuarantine(d)
 
 
 def wrap_stream(guard: "edgeguard.EdgeGuard", chunks):
@@ -98,10 +139,21 @@ def main() -> int:
         )
         return 1
 
-    tiered = edgeguard.TieredGuard(scorer="heuristic", db_path=None, policy_path=POLICY)
-    basic = edgeguard.EdgeGuard(db_path=None, policy_path=POLICY)
+    # Both constructors now RAISE if `policy_path` cannot be compiled, rather
+    # than warning on stderr and continuing with an empty policy layer. That
+    # layer is the only source of the sk-/ghp_/AKIA patterns, so a mistyped or
+    # relocated path used to produce a guard that reported every API key as
+    # safe. `policy_rule_count()` is still worth asserting on: it catches the
+    # case where the file loaded but every rule in it was disabled.
+    try:
+        tiered = edgeguard.TieredGuard(scorer="heuristic", db_path=None, policy_path=POLICY)
+        basic = edgeguard.EdgeGuard(db_path=None, policy_path=POLICY)
+    except ValueError as e:
+        print(f"refusing to start without the policy layer: {e}", file=sys.stderr)
+        return 1
     if basic.policy_rule_count() == 0:
-        print(f"warning: no policy rules loaded from {POLICY}", file=sys.stderr)
+        print(f"{POLICY} loaded but enabled no rules", file=sys.stderr)
+        return 1
 
     print("=== 1. Inbound prompt guard ===")
     safe = "Explain quantum computing briefly."
@@ -114,6 +166,22 @@ def main() -> int:
         return 1
     except GuardrailViolation as e:
         print(f"[PASS] blocked: {e}")
+
+    print("\n=== 1b. The verdict that is not a block and is not a pass ===")
+    # Padding a grey prompt past the semantic tier's 16 KiB input bound used to
+    # skip Tier 2 and return `needs_semantic_check`, which the old
+    # `if d["is_blocked"]` gate forwarded. The SDK now refuses these outright,
+    # and this gate would catch them even if it did not.
+    padded = "pretend to be a pirate. " + ("filler text " * 20_000)
+    try:
+        v = guard_prompt(tiered, padded)
+        if v.get("quarantined"):
+            print(f"[PASS] quarantined, not forwarded ({v['verdict']}/{v['interim']})")
+        else:
+            print(f"[FAIL] a padded grey prompt was cleared: {v['verdict']}")
+            return 1
+    except GuardrailViolation as e:
+        print(f"[PASS] not cleared ({e.verdict['verdict']}, stage {e.verdict['decided_by']}): {e}")
 
     print("\n=== 2. Outbound stream guard ===")
     try:

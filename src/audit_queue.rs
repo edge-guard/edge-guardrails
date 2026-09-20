@@ -395,6 +395,19 @@ impl AuditQueue {
 }
 
 fn open_db(path: &Path, cfg: &QueueConfig) -> Result<Connection, rusqlite::Error> {
+    // 0600 before SQLite creates it. Outbox rows are categories, never values
+    // - but they are still a record of which detections fired on this device,
+    // and a file created at the default `0644` hands that to every local
+    // account. Same guard the deferred store gets.
+    if let Err(e) = crate::create_private_file(path) {
+        eprintln!(
+            "[EdgeGuard] audit outbox '{}' could not be restricted to owner-only \
+             (0600) permissions: {}",
+            path.display(),
+            e
+        );
+        return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
+    }
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE

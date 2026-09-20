@@ -16,6 +16,8 @@
 //! what a real model would do - they only prove the pipeline carries prompts
 //! end to end. Treat a run without `--model` as a plumbing test.
 
+#[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt;
 use std::sync::Arc;
 
 use edgeguard::deferred::{DeferredConfig, DeferredQueue, DeferredWorker};
@@ -91,7 +93,20 @@ fn main() {
             _ => (Arc::new(HeuristicScorer::new()), false),
         };
 
+    // The deferred store holds verbatim prompt text. `DeferredQueue::open`
+    // now creates the database file itself at 0600, but the directory around
+    // it is this example's to get right: `create_dir_all` leaves 0755 under a
+    // world-writable /tmp, and the name is guessable, so it is also
+    // pre-creatable by another local user before this process starts.
     let dir = std::env::temp_dir().join(format!("eg_slowpath_demo_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    #[cfg(unix)]
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .unwrap();
+    #[cfg(not(unix))]
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("edgeguard_deferred.db");
 

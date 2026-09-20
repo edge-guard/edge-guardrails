@@ -3,8 +3,23 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "edgeguard-sdk"
-version = "0.8.0"
+# The distribution name MUST match the import name, and did not.
+#
+# This project published as `edgeguard-sdk` while importing as `edgeguard`.
+# A separate `ctypes` package publishes as `edgeguard-ai` and also imports as
+# `edgeguard`. pip tracks distributions, not import names, so:
+#
+#   * `pip uninstall edgeguard` removes neither of them;
+#   * both can be installed at once, with no conflict reported;
+#   * sys.path order decides which one `import edgeguard` gets, and the two
+#     disagree about violation codes (1-6 vs 101/103/201/301-304/20000+).
+#
+# That is the shadowing bug, and renaming the distribution is the fix. Anyone
+# holding the old name upgrades with:
+#
+#   pip uninstall -y edgeguard-sdk edgeguard-ai && pip install edgeguard
+name = "edgeguard"
+version = "0.9.0"
 description = "On-device AI guardrails engine (Rust core, Python bindings via PyO3)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -43,12 +58,29 @@ Repository = "https://github.com/shmuelhelman/edgeguard-sdk"
 Issues = "https://github.com/shmuelhelman/edgeguard-sdk/issues"
 
 [tool.maturin]
+# Matches [project].name above. Keep them identical.
 module-name = "edgeguard"
 features = ["python"]
-# Ship the shipped regex layer inside the wheel. Without it a `pip install`
-# has no policy.yaml on disk, and `EdgeGuard(policy_path=...)` - which is what
-# enables the API-key and secret patterns - has nothing to point at.
-include = [{ path = "policy.yaml", format = ["sdist", "wheel"] }]
+# sdist ONLY, and this is load-bearing rather than tidiness.
+#
+# `src/lib.rs` embeds these rules with `include_str!("../policy.yaml")`, so
+# the file must be present to *compile* - an sdist without it cannot be built
+# from source. The wheel needs no copy at all: the rules are already in the
+# binary, and shipping a second copy beside it would create a file that looks
+# authoritative, is not read by anything, and drifts.
+#
+# A caller who wants the text reads `edgeguard.DEFAULT_POLICY_YAML`.
+include = [{ path = "policy.yaml", format = "sdist" }]
+
+# Build the manylinux-compatible wheel by default on Linux. Without this,
+# wheels are tagged `linux_x86_64`, which PyPI rejects and pip will not
+# install on most distributions - the single most common reason a Rust
+# extension "works locally" and is uninstallable everywhere else.
+[tool.maturin.target.x86_64-unknown-linux-gnu]
+manylinux = "2_17"
+
+[tool.maturin.target.aarch64-unknown-linux-gnu]
+manylinux = "2_17"
 # =============================================================================
 # Python tooling
 # =============================================================================

@@ -37,6 +37,38 @@
  * caller forgot to check a return value is not a guardrail.
  *
  * ---------------------------------------------------------------------------
+ * HANDLING THE VERDICT - there are THREE, and only ONE of them is a pass
+ * ---------------------------------------------------------------------------
+ *
+ * Gate on PASS. Do not gate on BLOCK.
+ *
+ *     if (edgeguard_scan(g, buf, len, &d) != EDGEGUARD_OK ||
+ *         d.verdict != EDGEGUARD_VERDICT_PASS) {
+ *             ... do not forward the prompt ...
+ *     }
+ *
+ * The example in this header used to be `d.verdict == EDGEGUARD_VERDICT_BLOCK`,
+ * and that is a bypass. EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK is 1, which is
+ * not BLOCK, so every prompt the engine declined to clear was forwarded
+ * upstream by any host that copied the snippet.
+ *
+ * NEEDS_SEMANTIC_CHECK does not mean "probably fine". It means the fast path
+ * deliberately did NOT decide: the payload reached the grey band, or the
+ * semantic tier could not answer for it. What you do with that is genuinely
+ * your policy - refuse, route to a stricter model, downgrade the agent's tool
+ * permissions, or serve it and mark it for review - but "treat it as a pass"
+ * is not one of the options, because it makes "keep the engine from deciding"
+ * a complete and repeatable bypass.
+ *
+ * Two conditions an attacker can trigger are reported as BLOCK rather than
+ * NEEDS_SEMANTIC_CHECK, so they need no policy from you:
+ *
+ *   - a grey prompt padded past the semantic tier's input bound
+ *     (EDGEGUARD_STAGE_TIER2_UNAVAILABLE);
+ *   - a grey prompt arriving while the circuit breaker is open
+ *     (EDGEGUARD_STAGE_TIER2_SHED).
+ *
+ * ---------------------------------------------------------------------------
  * THREADING
  * ---------------------------------------------------------------------------
  *
@@ -70,7 +102,10 @@ extern "C" {
  * used the old names will fail to compile, which is the intent. A silently
  * renamed verdict is worse than a build error. */
 #define EDGEGUARD_VERDICT_PASS                  0
-#define EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK  1  /* host decides policy */
+/* NOT a pass. The fast path deliberately did not decide - see "HANDLING THE
+ * VERDICT" above. Your policy chooses between refusing, quarantining and
+ * serving-and-marking; it does not get to choose "forward it unchanged". */
+#define EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK  1
 #define EDGEGUARD_VERDICT_BLOCK                 2
 
 /* --- deciding stage ----------------------------------------------------- */

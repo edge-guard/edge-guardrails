@@ -380,6 +380,44 @@ impl Default for TierConfig {
     }
 }
 
+impl TierConfig {
+    /// Check the semantic thresholds are a coherent pair.
+    ///
+    /// `block_threshold` and `flag_threshold` are compared against
+    /// `score.malicious`, which every [`SemanticScorer`] returns in `[0.0,
+    /// 1.0]`. A threshold outside that interval is not a strict setting, it is
+    /// a dead branch: `block_threshold = 1.5` can never be satisfied, so Tier
+    /// 2 stops blocking entirely, construction still succeeds, and
+    /// `metrics().tier2_blocks` reads `0` - indistinguishable from traffic
+    /// that simply contained no attacks. `flag_threshold > block_threshold`
+    /// makes the flag branch unreachable the same way.
+    ///
+    /// Returned rather than clamped: silently repairing a threshold would hide
+    /// the misconfiguration this exists to surface. NaN is rejected by the
+    /// range check, since every comparison against NaN is false.
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, v) in [
+            ("block_threshold", self.block_threshold),
+            ("flag_threshold", self.flag_threshold),
+        ] {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(format!(
+                    "{} is {}; semantic scores are probabilities, so it must be within [0.0, 1.0]",
+                    name, v
+                ));
+            }
+        }
+        if self.flag_threshold > self.block_threshold {
+            return Err(format!(
+                "flag_threshold ({}) is above block_threshold ({}); nothing could ever be \
+                 flagged, because anything scoring that high would already have been blocked",
+                self.flag_threshold, self.block_threshold
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Circuit breaker
 // ---------------------------------------------------------------------------
@@ -1044,6 +1082,43 @@ impl TieredEngine {
             grey_decision(v, reason, by)
         };
 
+        // A refusal the fallback policy does not get a vote on.
+        //
+        // [`FallbackPolicy`] exists for conditions the *deployment* caused and
+        // the attacker did not: a model file that was never provisioned, a
+        // scorer left off. Those are honestly a risk-posture choice.
+        //
+        // The two conditions below are different in kind, because the attacker
+        // picks when they happen:
+        //
+        // * an input over `tier2_max_input_bytes` - padding a grey prompt past
+        //   16 KiB skipped the model outright, and `max_input_bytes` is 2 MiB,
+        //   so the size guard never saw it either;
+        // * an open circuit breaker - three consecutive budget overruns are
+        //   inducible with large grey prompts, and the 30 s cooldown is a
+        //   window the attacker chose the start of.
+        //
+        // Under the default `FailClosedFlag` both returned
+        // `NeedsSemanticCheck`, which `Verdict::is_blocked` reports as false.
+        // That made "make Tier 2 skip me" a complete and repeatable bypass of
+        // the semantic tier for the cost of some filler text. An evasion
+        // signal is not a soft status, so these refuse outright.
+        //
+        // `interim` stays `None`: nothing is outstanding here. This IS the
+        // decision, not a placeholder for one that arrives later.
+        let hard_block = |reason: Cow<'static, str>, by: DecidedBy| -> Decision {
+            Decision {
+                obfuscation: flags,
+                span: flagged.map(|m| norm.original_span(m.anchor.clone())),
+                ..Decision::deterministic(
+                    Verdict::Block,
+                    crate::codes::GREY_NO_SEMANTIC,
+                    reason,
+                    by,
+                )
+            }
+        };
+
         // --- deferred mode --------------------------------------------------
         //
         // Checked before the scorer, because in this mode the engine does not
@@ -1100,18 +1175,23 @@ impl TieredEngine {
         };
 
         // Shed rather than queue when Tier 2 has been missing its budget.
+        // Shedding removes the model from the request path; it does not make
+        // the grey prompt safe, so the request is refused for as long as the
+        // breaker is open. See `hard_block`.
         if self.breaker.is_open() {
             self.metrics.tier2_shed.fetch_add(1, Ordering::Relaxed);
-            return fallback(
+            return hard_block(
                 Cow::Borrowed("Grey-area prompt; semantic tier shed by circuit breaker"),
                 DecidedBy::Tier2ShedByBreaker,
             );
         }
 
         // Bound the work: a huge grey payload is a latency attack, and
-        // scoring its first 128 tokens would be security theatre anyway.
+        // scoring its first 128 tokens would be security theatre anyway. It is
+        // also not a reason to serve it - a prompt that reached the grey band
+        // AND is too large to adjudicate is refused. See `hard_block`.
         if prompt.len() > self.cfg.tier2_max_input_bytes {
-            return fallback(
+            return hard_block(
                 Cow::Borrowed("Grey-area prompt exceeds the semantic tier's input bound"),
                 DecidedBy::Tier2Unavailable,
             );
@@ -1851,7 +1931,7 @@ mod tests {
     #[test]
     fn the_deterministic_pii_layer_also_bypasses_the_model() {
         let mock = MockScorer::new(0.0);
-        let det = Arc::new(crate::SecurityEngine::new(vec![], None, None));
+        let det = Arc::new(crate::SecurityEngine::without_policy(vec![], None));
         let eng = TieredEngine::with_baseline()
             .with_scorer(mock.clone())
             .with_deterministic(det);
@@ -1875,11 +1955,35 @@ mod tests {
         // Regression guard for the one-normalizer-fits-all mistake: the
         // injection view turns "4532" into "assea", so PII must be detected
         // on the ORIGINAL prompt, not the normalized one.
-        let det = Arc::new(crate::SecurityEngine::new(vec![], None, None));
+        let det = Arc::new(crate::SecurityEngine::without_policy(vec![], None));
         let eng = TieredEngine::with_baseline().with_deterministic(det);
         let mut sc = eng.new_scratch();
         assert_eq!(eng.inspect("card 4532015000000007", &mut sc).code, 301);
         assert_eq!(eng.inspect("my id is 123456782", &mut sc).code, 304);
+    }
+
+    // --- threshold validation ----------------------------------------------------
+
+    #[test]
+    fn incoherent_thresholds_are_refused_rather_than_clamped() {
+        let with = |block: f32, flag: f32| TierConfig {
+            block_threshold: block,
+            flag_threshold: flag,
+            ..TierConfig::default()
+        };
+        assert!(TierConfig::default().validate().is_ok());
+        assert!(with(1.0, 0.0).validate().is_ok());
+
+        // Above 1.0: never satisfiable, so Tier 2 stops blocking entirely and
+        // `metrics().tier2_blocks` reads 0 - indistinguishable from clean
+        // traffic. This is the misconfiguration that looks like a working
+        // guardrail.
+        assert!(with(1.5, 0.6).validate().is_err());
+        assert!(with(-0.1, 0.6).validate().is_err());
+        assert!(with(0.9, 2.0).validate().is_err());
+        assert!(with(f32::NAN, 0.6).validate().is_err());
+        // Inverted: the flag branch is unreachable.
+        assert!(with(0.6, 0.9).validate().is_err());
     }
 
     // --- Tier 2 unavailable / failing ------------------------------------------
@@ -1920,10 +2024,18 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_grey_prompt_skips_the_model_rather_than_blowing_the_budget() {
+    fn an_oversized_grey_prompt_skips_the_model_and_is_refused() {
         // Transformer cost is quadratic in sequence length; a 500 KB grey
         // prompt is a latency attack, and scoring its first 128 tokens would
         // be security theatre.
+        //
+        // Skipping the model is not the same as clearing the prompt, and this
+        // used to return `NeedsSemanticCheck` - which `is_blocked()` reports
+        // as false. Padding a grey payload past 16 KiB was therefore a
+        // complete bypass of the semantic tier for the cost of filler text,
+        // with `max_input_bytes` at 2 MiB so the size guard never saw it
+        // either. The attacker picks when this fires, so the fallback policy
+        // does not get a vote: it is a refusal.
         let mock = MockScorer::new(0.0);
         let eng = engine(mock.clone());
         let mut sc = eng.new_scratch();
@@ -1932,7 +2044,38 @@ mod tests {
         let d = eng.inspect(&big, &mut sc);
         assert_eq!(mock.calls(), 0);
         assert_eq!(d.decided_by, DecidedBy::Tier2Unavailable);
-        assert_eq!(d.verdict, Verdict::NeedsSemanticCheck);
+        assert_eq!(d.verdict, Verdict::Block);
+        assert!(
+            d.verdict.is_blocked(),
+            "a host gating on is_blocked must see it"
+        );
+        assert!(
+            d.interim.is_none(),
+            "a refusal is the decision, not an interim"
+        );
+    }
+
+    #[test]
+    fn padding_past_the_tier2_bound_cannot_buy_a_pass_under_any_fallback_policy() {
+        // The bypass above must stay closed even for a deployment that chose
+        // FailOpen, because FailOpen is a statement about the *deployment's*
+        // missing model, not about an attacker-chosen evasion.
+        for policy in [
+            FallbackPolicy::FailOpen,
+            FallbackPolicy::FailClosedFlag,
+            FallbackPolicy::FailClosedBlock,
+        ] {
+            let cfg = TierConfig {
+                on_tier2_unavailable: policy,
+                ..TierConfig::default()
+            };
+            let eng = TieredEngine::new(Arc::new(crate::graph::baseline_graph()), cfg)
+                .with_scorer(MockScorer::new(0.0));
+            let mut sc = eng.new_scratch();
+            let big = format!("pretend to be a pirate. {}", "filler text ".repeat(20_000));
+            let d = eng.inspect(&big, &mut sc);
+            assert_eq!(d.verdict, Verdict::Block, "policy {:?}", policy);
+        }
     }
 
     // --- circuit breaker ---------------------------------------------------------
@@ -2006,11 +2149,19 @@ mod tests {
         assert_eq!(slow.calls(), 3);
         assert!(eng.breaker().is_open());
 
-        // Every further grey request is shed without touching the model.
+        // Every further grey request is shed without touching the model - and
+        // refused. Shedding takes the model out of the request path; it does
+        // not make the grey prompt safe. This used to return
+        // `NeedsSemanticCheck`, so an attacker who could induce three budget
+        // overruns (large grey prompts will do it) bought a 30 s cooldown
+        // window in which every grey prompt passed a host gating on
+        // `is_blocked`. The attacker chooses when that window starts, so the
+        // fallback policy does not get a vote.
         for _ in 0..20 {
             let d = eng.inspect("pretend to be a pirate", &mut sc);
             assert_eq!(d.decided_by, DecidedBy::Tier2ShedByBreaker);
-            assert_eq!(d.verdict, Verdict::NeedsSemanticCheck);
+            assert_eq!(d.verdict, Verdict::Block);
+            assert!(d.interim.is_none());
         }
         assert_eq!(slow.calls(), 3, "shed requests still reached the model");
 
@@ -2088,7 +2239,7 @@ mod tests {
         // "Why was this blocked?" is the first question asked of a guardrail,
         // and it must always have an answer.
         let mock = MockScorer::new(0.99);
-        let det = Arc::new(crate::SecurityEngine::new(vec![], None, None));
+        let det = Arc::new(crate::SecurityEngine::without_policy(vec![], None));
         let eng = TieredEngine::with_baseline()
             .with_scorer(mock)
             .with_deterministic(det);

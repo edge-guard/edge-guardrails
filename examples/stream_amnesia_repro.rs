@@ -5,7 +5,7 @@ use edgeguard::SecurityEngine;
 use std::sync::Arc;
 
 fn main() {
-    let eng = SecurityEngine::new(vec![], None, None);
+    let eng = SecurityEngine::without_policy(vec![], None);
     let window_size = 32usize;
     let mut window = String::new();
 
@@ -85,7 +85,7 @@ fn main() {
 
     // Same stream, same window size, through the latching scanner.
     let mut s = StreamScanner::new(
-        Arc::new(SecurityEngine::new(vec![], None, None)),
+        Arc::new(SecurityEngine::without_policy(vec![], None)),
         window_size,
     );
     let mut tripped_at = None;

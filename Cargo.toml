@@ -1,6 +1,6 @@
 [package]
 name = "edgeguard-sdk"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 
 [lib]
@@ -13,7 +13,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 aho-corasick = "1.1"
 unicode-normalization = "0.1"
-pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
+# `extension-module` is NOT set here. It is added by the `python` feature
+# below, because linking it unconditionally breaks `cargo test --features
+# python`: the flag tells the linker to leave libpython symbols undefined,
+# which is correct for a module Python dlopens and wrong for a test binary
+# that has to resolve them itself.
+pyo3 = { version = "0.29", optional = true }
 regex = "1.13.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
@@ -24,7 +29,7 @@ sha2 = "0.11.0"
 
 [features]
 default = []
-python = ["dep:pyo3"]
+python = ["dep:pyo3", "pyo3/extension-module"]
 # Tier 2 semantic scoring via a local ONNX model.
 #
 # Off by default on purpose. `ort` is configured with `load-dynamic`, so the

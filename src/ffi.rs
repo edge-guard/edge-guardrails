@@ -43,11 +43,22 @@
 //!
 //! # Example
 //!
+//! **Gate on `PASS`, not on `BLOCK`.** There are three verdicts and only one
+//! of them clears the prompt. This example used to read `d.verdict ==
+//! EDGEGUARD_VERDICT_BLOCK`, which forwards every
+//! `EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK` (numerically `1`, and therefore
+//! not `BLOCK`) straight upstream - a bypass propagated into every host that
+//! copied it.
+//!
 //! ```c
 //! edgeguard_engine_t *g = edgeguard_engine_new(NULL, 0);
 //! edgeguard_decision_t d;
-//! if (edgeguard_scan(g, buf, len, &d) == EDGEGUARD_OK && d.verdict == EDGEGUARD_VERDICT_BLOCK) {
+//! if (edgeguard_scan(g, buf, len, &d) != EDGEGUARD_OK ||
+//!     d.verdict != EDGEGUARD_VERDICT_PASS) {
+//!     /* Refuse, or quarantine for a stricter check. Never forward. */
 //!     reject(d.violation_code, edgeguard_decided_by_name(d.decided_by));
+//! } else {
+//!     forward(buf, len);
 //! }
 //! edgeguard_engine_free(g);
 //! ```
@@ -299,10 +310,21 @@ pub unsafe extern "C" fn edgeguard_engine_new_ex(
         // The deterministic layer is also the audit sink every tier's verdict
         // is written through, so attaching it is what makes a C host's
         // decisions auditable as well as correct.
-        let engine =
-            TieredEngine::new(Arc::new(graph), TierConfig::default()).with_deterministic(Arc::new(
-                SecurityEngine::new(Vec::new(), db.as_deref(), policy.as_deref()),
-            ));
+        //
+        // A `policy_path` that will not compile yields no handle, the same as
+        // malformed rules YAML. Constructing an engine whose policy layer
+        // silently loaded zero rules would hand the caller something that
+        // looks like a guard and answers `PASS` to every key it was pointed at.
+        let deterministic = match SecurityEngine::new(Vec::new(), db.as_deref(), policy.as_deref())
+        {
+            Ok(e) => e,
+            Err(e) => {
+                set_last_error(e);
+                return ptr::null_mut();
+            }
+        };
+        let engine = TieredEngine::new(Arc::new(graph), TierConfig::default())
+            .with_deterministic(Arc::new(deterministic));
         Box::into_raw(Box::new(edgeguard_engine_t {
             inner: Arc::new(engine),
         }))
@@ -360,6 +382,45 @@ pub unsafe extern "C" fn edgeguard_scan(
     if engine.is_null() || (prompt.is_null() && len > 0) {
         set_last_error("null engine or prompt pointer");
         return EDGEGUARD_ERR_NULL_ARG;
+    }
+
+    // Bound `len` BEFORE it reaches `slice::from_raw_parts`.
+    //
+    // The size guard used to live only inside `inspect_inner`, which runs
+    // after the slice has been built and after `from_utf8` has walked every
+    // one of those bytes - so it never protected the unsafe read it was
+    // nominally guarding. A host that got a length wrong (an integer overflow,
+    // a `(size_t)-1` sentinel, a length counted in UTF-16 units, an
+    // uninitialized struct field) did not get a refusal; it got a read of
+    // however many bytes it named, off the end of its own buffer.
+    //
+    // This does NOT make the function safe, and nothing can: `from_raw_parts`
+    // on a bad `(ptr, len)` pair is undefined behaviour by construction, and
+    // the contract stays "the caller passes a valid pair". What it does is
+    // bound the blast radius of the realistic bug - a wrong length is now a
+    // clean 413 instead of a walk through unmapped memory - and it
+    // incidentally rules out `len > isize::MAX`, which is instant UB.
+    //
+    // Reported exactly as the Rust path reports an oversize prompt (BLOCK,
+    // code 413, stage `size_guard`, return `EDGEGUARD_OK`), because a C host
+    // and a Rust host must not disagree about what an oversize prompt is.
+    // That is asserted by `the_c_abi_and_the_rust_api_agree_verdict_for_verdict`.
+    let limit = (*engine).inner.config().max_input_bytes;
+    if len > limit {
+        set_last_error(format!(
+            "prompt length {} exceeds the {} byte limit; refused before reading it",
+            len, limit
+        ));
+        ptr::write(
+            out,
+            edgeguard_decision {
+                verdict: EDGEGUARD_VERDICT_BLOCK,
+                decided_by: EDGEGUARD_STAGE_SIZE_GUARD,
+                violation_code: crate::codes::PAYLOAD_TOO_LARGE,
+                ..edgeguard_decision::default()
+            },
+        );
+        return EDGEGUARD_OK;
     }
 
     let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -564,7 +625,7 @@ mod tests {
             Arc::new(crate::graph::baseline_graph()),
             TierConfig::default(),
         )
-        .with_deterministic(Arc::new(SecurityEngine::new(Vec::new(), None, None)))
+        .with_deterministic(Arc::new(SecurityEngine::without_policy(Vec::new(), None)))
     }
 
     // Regression test for a silent whole-class false negative: the C
@@ -594,6 +655,64 @@ mod tests {
                 assert_eq!(d.decided_by, EDGEGUARD_STAGE_TIER1_DETERMINISTIC);
             }
             edgeguard_engine_free(g);
+        }
+    }
+
+    // A length larger than the engine's limit must be refused BEFORE it is
+    // used to build a slice. `len` here is far past the end of the one-byte
+    // allocation: under the previous ordering this reached
+    // `slice::from_raw_parts` and `from_utf8` walked it.
+    #[test]
+    fn an_oversize_length_is_refused_before_the_buffer_is_read() {
+        unsafe {
+            let g = edgeguard_engine_new(ptr::null(), 0);
+            assert!(!g.is_null());
+            let buf = b"x";
+            let limit = edgeguard_max_input_bytes();
+
+            for len in [limit + 1, usize::MAX / 2, usize::MAX] {
+                let mut d = edgeguard_decision {
+                    verdict: EDGEGUARD_VERDICT_PASS,
+                    ..edgeguard_decision::default()
+                };
+                let rc = edgeguard_scan(g, buf.as_ptr() as *const c_char, len, &mut d);
+                // Same shape the Rust path produces for an oversize prompt, so
+                // a C host and a Rust host agree about what happened.
+                assert_eq!(rc, EDGEGUARD_OK, "len {}", len);
+                assert_eq!(d.verdict, EDGEGUARD_VERDICT_BLOCK, "len {}", len);
+                assert_eq!(d.decided_by, EDGEGUARD_STAGE_SIZE_GUARD, "len {}", len);
+                assert_eq!(d.violation_code, 413, "len {}", len);
+            }
+
+            // Exactly at the limit is still analyzed, so the bound is `>` and
+            // not `>=`: an input of precisely max_input_bytes is legal.
+            let big = vec![b'a'; limit];
+            let mut d = edgeguard_decision::default();
+            let rc = edgeguard_scan(g, big.as_ptr() as *const c_char, big.len(), &mut d);
+            assert_eq!(rc, EDGEGUARD_OK);
+            assert_eq!(d.verdict, EDGEGUARD_VERDICT_PASS);
+
+            edgeguard_engine_free(g);
+        }
+    }
+
+    // The refusal above must not be reachable with a NULL engine, because the
+    // limit is read through it. Ordering regression guard.
+    #[test]
+    fn a_null_engine_is_still_rejected_before_the_length_is_used() {
+        unsafe {
+            let mut d = edgeguard_decision {
+                verdict: EDGEGUARD_VERDICT_PASS,
+                ..edgeguard_decision::default()
+            };
+            let rc = edgeguard_scan(
+                ptr::null(),
+                b"x".as_ptr() as *const c_char,
+                usize::MAX,
+                &mut d,
+            );
+            assert_eq!(rc, EDGEGUARD_ERR_NULL_ARG);
+            assert_eq!(d.verdict, EDGEGUARD_VERDICT_BLOCK);
         }
     }
 

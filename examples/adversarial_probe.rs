@@ -92,7 +92,7 @@ fn main() {
     }
 
     println!("\n== 3. SecurityEngine::sanitize scaling (no size guard today) ==");
-    let eng = SecurityEngine::new(vec![], None, None);
+    let eng = SecurityEngine::without_policy(vec![], None);
     for &n in &[1_024usize, 8_192, 32_768, 131_072] {
         // many distinct PII items -> many sanitize passes, each O(N)
         let unit = "card 4532-0150-0000-0007 ";

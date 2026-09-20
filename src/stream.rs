@@ -240,7 +240,7 @@ mod tests {
     use super::*;
 
     fn engine() -> Arc<SecurityEngine> {
-        Arc::new(SecurityEngine::new(vec![], None, None))
+        Arc::new(SecurityEngine::without_policy(vec![], None))
     }
 
     fn scanner(window: usize) -> StreamScanner {

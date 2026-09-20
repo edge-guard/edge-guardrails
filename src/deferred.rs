@@ -159,6 +159,12 @@ pub enum DeferredError {
     /// a store that is shipped to the control plane.
     WouldShareAuditDb(PathBuf),
     Sqlite(rusqlite::Error),
+    /// The store could not be created with restrictive permissions.
+    ///
+    /// Treated as fatal for the same reason as the variant above: this file
+    /// holds verbatim prompt text, so one that cannot be made private is not
+    /// a store this queue may use.
+    Io(std::io::Error),
 }
 
 impl std::fmt::Display for DeferredError {
@@ -173,6 +179,12 @@ impl std::fmt::Display for DeferredError {
                 AUDIT_TABLE
             ),
             DeferredError::Sqlite(e) => write!(f, "deferred queue database error: {}", e),
+            DeferredError::Io(e) => write!(
+                f,
+                "deferred queue store could not be created with owner-only (0600) \
+                 permissions: {}",
+                e
+            ),
         }
     }
 }
@@ -374,6 +386,12 @@ impl DeferredQueue {
     /// by accident.
     pub fn open(db_path: impl AsRef<Path>, cfg: DeferredConfig) -> Result<Self, DeferredError> {
         let db_path = db_path.as_ref().to_path_buf();
+
+        // The probe below opens with SQLITE_OPEN_CREATE, so it is the call
+        // that can bring the file into existence - it has to be preceded by
+        // the same 0600 guard `open_db` applies, or the store would exist
+        // world-readable for the window between the two.
+        crate::create_private_file(&db_path).map_err(DeferredError::Io)?;
 
         // Checked on the caller's thread, before anything is spawned, so the
         // error surfaces at construction instead of inside a worker that has
@@ -584,6 +602,10 @@ impl std::fmt::Debug for DeferredWorker {
 
 impl DeferredWorker {
     pub fn open(db_path: impl AsRef<Path>, cfg: DeferredConfig) -> Result<Self, DeferredError> {
+        // Also opens with CREATE, so it gets the same 0600 guard as the
+        // producer side - a worker started before its queue must not be the
+        // thing that creates the prompt store world-readable.
+        crate::create_private_file(db_path.as_ref()).map_err(DeferredError::Io)?;
         let conn = Connection::open_with_flags(
             db_path.as_ref(),
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -717,6 +739,20 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool, rusqlite::Error> 
 }
 
 fn open_db(path: &Path, cfg: &DeferredConfig) -> Result<Connection, rusqlite::Error> {
+    // 0600 before SQLite touches it. This file holds verbatim prompt text -
+    // see this module's header - so a world-readable default mode publishes
+    // the grey-band traffic to every local account on the box. Refused rather
+    // than warned about: an unsecurable store is a confidentiality problem,
+    // and the queue degrades safely when it cannot open (grey prompts are
+    // counted and dropped, never silently written somewhere readable).
+    if let Err(e) = crate::create_private_file(path) {
+        eprintln!(
+            "[EdgeGuard] refusing to use deferred store '{}': cannot restrict its permissions: {}",
+            path.display(),
+            e
+        );
+        return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
+    }
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE

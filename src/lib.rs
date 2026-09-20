@@ -143,6 +143,61 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3::types::PyDict;
 
+/// Make sure `path` exists and is readable only by the user that owns it,
+/// **before** anything writes sensitive bytes into it.
+///
+/// Every SQLite store this crate creates holds material a local user must not
+/// be able to read: [`crate::deferred`] holds verbatim prompt text by design,
+/// and the audit trail holds violation labels (and, in databases written by
+/// pre-0.8 builds, raw values). Nothing in this crate used to set a mode, so
+/// each was created at `0666 & ~umask` - in practice `0644`, world-readable -
+/// and the deferred store in particular is a transcript of exactly the traffic
+/// the router found most suspicious.
+///
+/// Called before `Connection::open`, so the file never exists with a wider
+/// mode even momentarily. SQLite gives its `-wal` and `-shm` sidecars the mode
+/// of the main database file, so tightening this one covers all three.
+///
+/// An existing file is tightened too: a store created by an earlier build is
+/// the case that most needs it. Errors are returned rather than ignored -
+/// failing to secure the file is not a reason to go on and fill it.
+///
+/// On non-Unix targets this only ensures the file exists; Windows ACL defaults
+/// are not the same problem and are not modelled here.
+pub(crate) fn create_private_file(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        // `mode` applies only on creation, and is still masked by the process
+        // umask - which can only ever remove bits, never add them.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(_) => return Ok(()),
+            // Already there: fall through and tighten what is on disk.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 fn now_ts() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -295,7 +350,21 @@ impl BackgroundLogger {
         thread::spawn(move || {
             let stats = thread_stats;
             let opened = match target.as_deref() {
-                Some(path) => Connection::open(path),
+                // 0600 first. This is the file `dashboard_server.py` reads,
+                // and its own header records that a database found in this
+                // tree held two raw `sk-` keys - written by a build that
+                // predates the masking above. A world-readable default mode
+                // makes that trail readable by every local account.
+                Some(path) => match create_private_file(std::path::Path::new(path)) {
+                    Ok(()) => Connection::open(path),
+                    Err(e) => Err(rusqlite::Error::InvalidPath(path.into())).inspect_err(|_| {
+                        eprintln!(
+                            "[EdgeGuard] audit DB '{}' could not be restricted to \
+                                 owner-only (0600) permissions: {}",
+                            path, e
+                        )
+                    }),
+                },
                 None => Connection::open_in_memory(),
             };
             let mut conn = match opened {
@@ -467,7 +536,20 @@ impl CompiledPolicy {
     fn load_from_path(path: &str) -> Result<Self, String> {
         let raw = fs::read_to_string(path)
             .map_err(|e| format!("cannot read policy file '{}': {}", path, e))?;
-        let parsed: PolicyFileDef = serde_yaml::from_str(&raw)
+        Self::load_from_str(&raw, path)
+    }
+
+    /// Compile policy rules already in memory.
+    ///
+    /// `origin` names the source in error messages and in the `[EdgeGuard]`
+    /// diagnostics below - a path for a file, or `<embedded>` for
+    /// [`DEFAULT_POLICY_YAML`]. Split out of `load_from_path` so the embedded
+    /// default and a file on disk go through exactly one compiler: a second
+    /// parse path is a second place for the two to disagree about what a rule
+    /// means.
+    fn load_from_str(raw: &str, origin: &str) -> Result<Self, String> {
+        let path = origin;
+        let parsed: PolicyFileDef = serde_yaml::from_str(raw)
             .map_err(|e| format!("invalid policy YAML in '{}': {}", path, e))?;
 
         let mut rules = Vec::with_capacity(parsed.rules.len());
@@ -534,6 +616,63 @@ fn file_mtime(path: &str) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// The `policy.yaml` shipped with this crate, compiled into the binary.
+///
+/// Embedded rather than resolved from disk because the path was the bug. A
+/// `pip install` has no source tree, and every published example built the
+/// path as `dirname(__file__)/../policy.yaml`, which is correct only when the
+/// caller happens to live one directory below a checkout. Relocate the
+/// script, install from a wheel, or change a container layout and the file
+/// silently was not there.
+///
+/// That mattered because this layer is the **only** source of the
+/// `sk-`/`ghp_`/`AKIA` patterns - the built-in detectors cover card, email,
+/// AKIA and IL-ID and nothing else. A missing file meant a guard that
+/// reported every OpenAI key as safe.
+///
+/// `include_str!` removes the failure mode rather than handling it: there is
+/// no path to get wrong, no file to lose, and no I/O at construction. The
+/// bytes are in `.rodata` and are the same bytes the repository's tests run
+/// against.
+///
+/// Exposed to Python as `edgeguard.DEFAULT_POLICY_YAML` so a caller who wants
+/// to extend these rules can start from them without hunting for the file.
+pub const DEFAULT_POLICY_YAML: &str = include_str!("../policy.yaml");
+
+/// Where an engine's operator policy layer comes from.
+///
+/// Three states, because there are three, and `Option<&str>` could only
+/// express two. Conflating "use the defaults" with "run no policy layer at
+/// all" is what made an empty policy layer look like a deliberate choice
+/// rather than a missing file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicySource {
+    /// [`DEFAULT_POLICY_YAML`]. No I/O, cannot fail at runtime, not watched.
+    Embedded,
+    /// A file on disk. Compiled at construction - a failure here is a hard
+    /// error, never an empty layer - and watched for changes thereafter.
+    Path(String),
+    /// No operator layer. The built-in detectors still run; they are the
+    /// safety floor and are not controlled by policy.yaml.
+    Disabled,
+}
+
+impl PolicySource {
+    /// `Some(path)` -> [`Self::Path`], `None` -> [`Self::Disabled`].
+    ///
+    /// The mapping the Rust API has always had. Deliberately NOT
+    /// `None -> Embedded`: a Rust caller that passed no path asked for no
+    /// policy layer, and silently giving them one would change what every
+    /// existing embedded build detects. The friendlier default belongs to the
+    /// Python binding, where "I just pip installed this" is the common case.
+    pub fn from_optional_path(path: Option<&str>) -> Self {
+        match path {
+            Some(p) => PolicySource::Path(p.to_string()),
+            None => PolicySource::Disabled,
+        }
+    }
+}
+
 pub struct PolicyEngine {
     compiled: Arc<RwLock<Arc<CompiledPolicy>>>,
     default_path: Option<String>,
@@ -544,16 +683,38 @@ pub struct PolicyEngine {
 }
 
 impl PolicyEngine {
-    pub fn new(path: Option<&str>) -> Self {
-        let initial = match path {
-            Some(p) => match CompiledPolicy::load_from_path(p) {
-                Ok(cp) => cp,
-                Err(e) => {
-                    eprintln!("[EdgeGuard] {} - starting with an empty policy layer.", e);
-                    CompiledPolicy::empty()
-                }
-            },
-            None => CompiledPolicy::empty(),
+    /// Compile the operator policy layer, or fail.
+    ///
+    /// [`PolicySource::Disabled`] means "this deployment configured no policy
+    /// layer" and yields an empty one. A [`PolicySource::Path`] is a *promise
+    /// that those rules are in force*, and a promise that cannot be kept is an
+    /// error, not a warning.
+    ///
+    /// This used to swallow the error and install [`CompiledPolicy::empty`]
+    /// after one `eprintln!`. `policy.yaml` is the sole source of the
+    /// OpenAI/GitHub/AWS key patterns - the built-in detectors cover only
+    /// card, email, AKIA and IL-ID - so a moved file, a relocated script, or a
+    /// container layout change silently removed secret detection while every
+    /// scan kept reporting `is_safe: true`. A guardrail that cannot load its
+    /// rules must refuse to exist, not pretend it has none to load.
+    ///
+    /// [`PolicySource::Embedded`] cannot fail at runtime: the bytes are
+    /// compiled in, and if they did not parse the crate would not have built
+    /// (a unit test compiles them). It returns `Result` anyway so the three
+    /// sources share one call shape.
+    pub fn new(source: PolicySource) -> Result<Self, String> {
+        let initial = match &source {
+            PolicySource::Embedded => {
+                CompiledPolicy::load_from_str(DEFAULT_POLICY_YAML, "<embedded>")?
+            }
+            // Propagated, not logged. The caller asked for these rules.
+            PolicySource::Path(p) => CompiledPolicy::load_from_path(p)?,
+            PolicySource::Disabled => CompiledPolicy::empty(),
+        };
+        // Only a file can change under us. The embedded policy is `.rodata`.
+        let path = match &source {
+            PolicySource::Path(p) => Some(p.as_str()),
+            _ => None,
         };
 
         let compiled = Arc::new(RwLock::new(Arc::new(initial)));
@@ -597,11 +758,11 @@ impl PolicyEngine {
             stop_tx
         });
 
-        PolicyEngine {
+        Ok(PolicyEngine {
             compiled,
             default_path: path.map(|p| p.to_string()),
             _watch_stop: watch_stop,
-        }
+        })
     }
 
     pub fn reload(&self, path: &str) -> Result<usize, String> {
@@ -700,6 +861,164 @@ enum PiiKind {
     IlId,
 }
 
+// ---------------------------------------------------------------------------
+// Unicode digit folding
+// ---------------------------------------------------------------------------
+
+/// Base code point of every contiguous Unicode decimal-digit block (general
+/// category `Nd`).
+///
+/// Generated from the Unicode Character Database, not hand-written:
+///
+/// ```text
+/// python3 -c "
+/// import unicodedata
+/// print([hex(c) for c in range(0x110000)
+///        if unicodedata.category(chr(c))=='Nd' and unicodedata.decimal(chr(c))==0
+///        and all(unicodedata.decimal(chr(c+i),-1)==i for i in range(10))])"
+/// ```
+///
+/// At the UCD version this was generated from (13.0.0) that enumeration covers
+/// **all 650** `Nd` code points with zero left over, so every decimal digit
+/// Unicode defines sits at `base + value` for one of these bases. Blocks added
+/// by later Unicode versions are not folded; rerun the command above to
+/// refresh the table. Sorted, because the lookup binary-searches it.
+const DIGIT_BLOCK_BASES: [u32; 65] = [
+    0x0030, 0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6,
+    0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80,
+    0x1A90, 0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0,
+    0xFF10, 0x104A0, 0x10D30, 0x11066, 0x110F0, 0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0,
+    0x11650, 0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50, 0x11D50, 0x11DA0, 0x16A60, 0x16B50,
+    0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6, 0x1E140, 0x1E2F0, 0x1E950, 0x1FBF0,
+];
+
+/// Fold one Unicode decimal digit to its ASCII counterpart.
+///
+/// `None` for anything that is not a decimal digit, and - deliberately - for
+/// ASCII digits themselves, so the caller can tell "nothing to do" from "this
+/// needed rewriting" without a second comparison.
+#[inline]
+fn fold_digit(c: char) -> Option<u8> {
+    let cp = c as u32;
+    // ASCII is the overwhelming majority of every prompt and can never need
+    // folding, so it leaves before the search.
+    if cp < 0x80 {
+        return None;
+    }
+    let i = DIGIT_BLOCK_BASES.partition_point(|&b| b <= cp);
+    let base = *DIGIT_BLOCK_BASES.get(i.checked_sub(1)?)?;
+    let offset = cp - base;
+    if offset < 10 {
+        Some(b'0' + offset as u8)
+    } else {
+        None
+    }
+}
+
+/// A prompt whose Unicode decimal digits have been folded to ASCII, with the
+/// mapping back to the caller's byte offsets.
+///
+/// # Why this exists
+///
+/// PII detection deliberately runs on the **original** prompt rather than the
+/// injection lane's normalized view, because that view folds leetspeak digits
+/// into letters and destroys the digit runs Luhn and the IL-ID checksum need.
+/// The cost was that the PII detectors only ever saw ASCII digits: every
+/// pattern is written with `[0-9]`, and `char::to_digit` returns `None` for a
+/// non-ASCII digit, so both the regex *and* the checksum failed.
+///
+/// A Luhn-valid card written with fullwidth digits (`４５３２…`), Arabic-Indic
+/// (`٤٥٣٢…`), Devanagari, or any of the other 60-odd decimal blocks therefore
+/// scanned completely clean - a one-line evasion against every built-in PII
+/// detector, reachable from any text box.
+///
+/// # Spans
+///
+/// Folding changes byte lengths (a fullwidth digit is 3 bytes, an ASCII digit
+/// is 1), so a span found in the folded text does not index the caller's
+/// string. `original_span` maps it back. That matters for more than tidiness:
+/// `mask_pii` slices the original with these ranges, and a stale offset would
+/// either redact the wrong bytes or panic on a non-char-boundary.
+struct DigitFolded<'a> {
+    text: Cow<'a, str>,
+    /// `(folded_offset, original_offset)` immediately after each folded digit.
+    /// Empty when nothing was folded, which is the common case and the one
+    /// that allocates nothing.
+    breaks: Vec<(u32, u32)>,
+}
+
+impl<'a> DigitFolded<'a> {
+    fn new(input: &'a str) -> Self {
+        let borrowed = |input: &'a str| DigitFolded {
+            text: Cow::Borrowed(input),
+            breaks: Vec::new(),
+        };
+
+        // An all-ASCII string cannot contain a foldable digit, and `is_ascii`
+        // is a plain byte scan. This is the path essentially every prompt
+        // takes, and it neither allocates nor decodes UTF-8.
+        if input.is_ascii() {
+            return borrowed(input);
+        }
+        // Non-ASCII, but still usually no digits in it. Find the first one
+        // before committing to a buffer.
+        let Some((first, _)) = input.char_indices().find(|&(_, c)| fold_digit(c).is_some()) else {
+            return borrowed(input);
+        };
+
+        let mut text = String::with_capacity(input.len());
+        let mut breaks = Vec::new();
+        text.push_str(&input[..first]);
+        for (i, c) in input[first..].char_indices() {
+            match fold_digit(c) {
+                Some(ascii) => {
+                    text.push(ascii as char);
+                    breaks.push((text.len() as u32, (first + i + c.len_utf8()) as u32));
+                }
+                None => text.push(c),
+            }
+        }
+        DigitFolded {
+            text: Cow::Owned(text),
+            breaks,
+        }
+    }
+
+    #[inline]
+    fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Map a byte offset in the folded text back to the original.
+    ///
+    /// Between two folds the text was copied byte for byte, so the offset
+    /// within that stretch carries over unchanged and only the accumulated
+    /// difference has to be looked up.
+    #[inline]
+    fn original_offset(&self, folded: usize) -> usize {
+        let i = self
+            .breaks
+            .partition_point(|&(f, _)| (f as usize) <= folded);
+        match i.checked_sub(1) {
+            // Before the first fold: nothing has shifted yet.
+            None => folded,
+            Some(i) => {
+                let (f, o) = self.breaks[i];
+                o as usize + (folded - f as usize)
+            }
+        }
+    }
+
+    /// Map a span in the folded text back to the original.
+    #[inline]
+    fn original_span(&self, s: Range<usize>) -> Range<usize> {
+        if self.breaks.is_empty() {
+            return s;
+        }
+        self.original_offset(s.start)..self.original_offset(s.end)
+    }
+}
+
 struct PiiHit {
     code: u32,
     reason: &'static str,
@@ -727,16 +1046,47 @@ pub struct ScanResult {
 
 impl Default for SecurityEngine {
     fn default() -> Self {
-        Self::new(vec![], None, None)
+        // Infallible: the only fallible input to `new` is `policy_path`, and
+        // this passes `None`.
+        Self::new(vec![], None, None).expect("a SecurityEngine with no policy path cannot fail")
     }
 }
 
 impl SecurityEngine {
+    /// Build the deterministic engine.
+    ///
+    /// Fails only when `policy_path` is `Some` and those rules cannot be
+    /// compiled - see [`PolicyEngine::new`]. Passing `None` cannot fail and
+    /// yields **no** operator policy layer;
+    /// [`SecurityEngine::without_policy`] is the constructor for that case and
+    /// does not force the caller through a `Result`.
+    ///
+    /// For the compiled-in default rules, use
+    /// [`SecurityEngine::with_policy_source`] with [`PolicySource::Embedded`].
+    /// That is deliberately not what `None` means here: a Rust caller who
+    /// passed no path asked for no policy layer, and quietly giving one to
+    /// every existing embedded build would change what it detects.
     pub fn new(
         custom_patterns: Vec<String>,
         db_path: Option<&str>,
         policy_path: Option<&str>,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        Self::with_policy_source(
+            custom_patterns,
+            db_path,
+            PolicySource::from_optional_path(policy_path),
+        )
+    }
+
+    /// [`Self::new`] over an explicit [`PolicySource`].
+    ///
+    /// The constructor the Python binding uses, because the binding's default
+    /// is [`PolicySource::Embedded`] rather than `Disabled`.
+    pub fn with_policy_source(
+        custom_patterns: Vec<String>,
+        db_path: Option<&str>,
+        policy: PolicySource,
+    ) -> Result<Self, String> {
         // Roleplay / jailbreak / prompt-injection heuristics.
         let base_patterns = vec![
             "ignore previous instructions",
@@ -801,9 +1151,9 @@ impl SecurityEngine {
         let pii_digit_run_re =
             Regex::new(r"(?:^|[^0-9])((?:[0-9][ \-._\u{A0}]?){8,18}[0-9])(?:[^0-9]|$)").unwrap();
 
-        let policy = PolicyEngine::new(policy_path);
+        let policy = PolicyEngine::new(policy)?;
 
-        SecurityEngine {
+        Ok(SecurityEngine {
             ac,
             custom_ac,
             logger,
@@ -811,7 +1161,18 @@ impl SecurityEngine {
             aws_re,
             pii_digit_run_re,
             policy,
-        }
+        })
+    }
+
+    /// [`Self::new`] for a deployment with no `policy.yaml`.
+    ///
+    /// Exists so the many call sites that never had a policy layer are not
+    /// forced to handle an error that cannot occur - and so that a `Result`
+    /// appearing in a call site is a genuine signal that operator rules are in
+    /// play.
+    pub fn without_policy(custom_patterns: Vec<String>, db_path: Option<&str>) -> Self {
+        Self::new(custom_patterns, db_path, None)
+            .expect("a SecurityEngine with no policy path cannot fail")
     }
 
     pub fn policy_rule_count(&self) -> usize {
@@ -888,7 +1249,26 @@ impl SecurityEngine {
         None
     }
 
+    /// Detect the first PII hit, with **Unicode decimal digits folded to
+    /// ASCII first**.
+    ///
+    /// Every detector below is written against `[0-9]`, and the checksums use
+    /// `char::to_digit`, which returns `None` for a non-ASCII digit. Without
+    /// this fold a Luhn-valid card in fullwidth or Arabic-Indic digits missed
+    /// the regex *and* would have failed validation even if it had matched.
+    ///
+    /// The returned range indexes the **caller's** string, not the folded one,
+    /// so `mask_pii` and every existing caller are unaffected.
     fn find_pii_hit(&self, text: &str) -> Option<PiiHit> {
+        let folded = DigitFolded::new(text);
+        let mut hit = self.find_pii_hit_folded(folded.as_str())?;
+        hit.range = folded.original_span(hit.range);
+        Some(hit)
+    }
+
+    /// [`Self::find_pii_hit`] over text that is already digit-folded. Spans
+    /// are in *that* text's coordinates.
+    fn find_pii_hit_folded(&self, text: &str) -> Option<PiiHit> {
         if let Some(mat) = self.aws_re.find(text) {
             return Some(PiiHit {
                 code: 302,
@@ -948,7 +1328,22 @@ impl SecurityEngine {
     ///
     /// `Vec::new` does not allocate until the first push, so text with no PII
     /// costs nothing here beyond the regex passes.
+    /// Spans to redact, with the same digit fold as [`Self::find_pii_hit`].
+    ///
+    /// `sanitize` has to redact a fullwidth-digit card for the same reason
+    /// `scan` has to detect one: otherwise the evasion that defeats detection
+    /// also defeats redaction, and the value survives into whatever the caller
+    /// forwards. Ranges index the caller's string.
     fn pii_mask_spans(&self, text: &str) -> Vec<(Range<usize>, &'static str)> {
+        let folded = DigitFolded::new(text);
+        let mut spans = self.pii_mask_spans_folded(folded.as_str());
+        for (range, _) in spans.iter_mut() {
+            *range = folded.original_span(range.clone());
+        }
+        spans
+    }
+
+    fn pii_mask_spans_folded(&self, text: &str) -> Vec<(Range<usize>, &'static str)> {
         let mut spans: Vec<(Range<usize>, &'static str)> = Vec::new();
         for mat in self.aws_re.find_iter(text) {
             spans.push((mat.range(), "[AWS_KEY]"));
@@ -1008,6 +1403,35 @@ impl SecurityEngine {
         }
         out.push_str(&input[cursor..]);
         Cow::Owned(out)
+    }
+
+    /// The label an operator-authored match is reported under.
+    ///
+    /// **`matched_pattern` must never carry the value a rule recovered.** A
+    /// `policy.yaml` regex and a custom pattern are both unbounded: the text
+    /// they match is, in the cases that matter, the live credential itself -
+    /// `policy.yaml` ships the `sk-`, `ghp_` and `AKIA` patterns, and a custom
+    /// pattern is very often the secret. PII masking does not help, because
+    /// the value is usually not one of the four kinds this engine recognizes.
+    ///
+    /// The old justification for echoing it - "the caller already owns the
+    /// prompt, so detail leaks nothing" - is false on the two paths that
+    /// matter most. On the outbound path the scanned text is *model output*
+    /// the caller is specifically trying not to retain, and
+    /// [`crate::stream::StreamScanner`] latches the first violation and
+    /// re-reports it on every subsequent token, so a host that logs the
+    /// verdict writes the recovered key into its logs once per token for the
+    /// rest of the response.
+    ///
+    /// The label is the same vocabulary [`Self::audit_label`] persists, so the
+    /// value a caller sees and the value the trail keeps no longer differ -
+    /// and `dashboard_server.py`'s allow-list already accepts both forms.
+    fn operator_match_label(code: u32) -> String {
+        match crate::codes::classify(code) {
+            crate::codes::CodeClass::PolicyRule { id } => format!("POLICY_RULE_{}", id),
+            crate::codes::CodeClass::TenantRule { id } => format!("TENANT_RULE_{}", id),
+            _ => "CUSTOM_PATTERN_MATCH".to_string(),
+        }
     }
 
     /// What the audit trail is allowed to persist.
@@ -1076,8 +1500,10 @@ impl SecurityEngine {
             return ScanResult {
                 is_safe: false,
                 violation_code: hit.code,
+                // Never the matched text: see `operator_match_label`. The rule
+                // that fired is named in `reason`.
+                matched_pattern: Self::operator_match_label(hit.code),
                 reason: hit.reason,
-                matched_pattern: payload[hit.range].to_string(),
             };
         }
         if let Some(hit) = pii {
@@ -1189,16 +1615,25 @@ impl SecurityEngine {
         //    UTF-8 char boundary and panicking.
         //
         //    Deliberately ahead of the masking below, and fed the unmasked
-        //    text: an AC hit spans exactly one literal from our own pattern
-        //    list, so it cannot contain a caller's PII no matter what else the
-        //    prompt carries. Masking first would buy nothing here and would
-        //    cost every blocked injection a PII pass it currently skips.
+        //    text: a *base* AC hit spans exactly one literal from our own
+        //    pattern list, so it cannot contain a caller's PII no matter what
+        //    else the prompt carries. Masking first would buy nothing here and
+        //    would cost every blocked injection a PII pass it currently skips.
+        //
+        //    A *custom* pattern hit is the opposite case and is labelled
+        //    rather than echoed: `custom_patterns` is where an operator puts
+        //    an internal key format or a project codename, so the matched text
+        //    is very often the secret the rule exists to find.
         if let Some((code, reason, range)) = self.find_ac_hit(&cleaned) {
             return ScanResult {
                 is_safe: false,
                 violation_code: code,
+                matched_pattern: if code == crate::codes::CUSTOM_PATTERN {
+                    Self::operator_match_label(code)
+                } else {
+                    cleaned[range].to_string()
+                },
                 reason: reason.to_string(),
-                matched_pattern: cleaned[range].to_string(),
             };
         }
 
@@ -1228,8 +1663,12 @@ impl SecurityEngine {
             return ScanResult {
                 is_safe: false,
                 violation_code: hit.code,
+                // Never the matched text: see `operator_match_label`. Masking
+                // PII above is not enough on its own - `sk-` and `ghp_` keys
+                // are not PII kinds, so they reached this regex unmasked and
+                // were handed straight back to the caller.
+                matched_pattern: Self::operator_match_label(hit.code),
                 reason: hit.reason,
-                matched_pattern: payload[hit.range].to_string(),
             };
         }
 
@@ -1469,6 +1908,20 @@ fn scan_result_to_dict<'py>(py: Python<'py>, res: &ScanResult) -> PyResult<Bound
     Ok(dict)
 }
 
+/// Resolve the binding's two policy knobs into one [`PolicySource`].
+///
+/// One function so `EdgeGuard` and `TieredGuard` cannot drift on what
+/// `policy_path=None, embedded_policy=True` means.
+#[cfg(feature = "python")]
+fn py_policy_source(policy_path: Option<String>, embedded_policy: bool) -> PolicySource {
+    match (policy_path, embedded_policy) {
+        // An explicit path always wins, and never falls back.
+        (Some(p), _) => PolicySource::Path(p),
+        (None, true) => PolicySource::Embedded,
+        (None, false) => PolicySource::Disabled,
+    }
+}
+
 #[cfg(feature = "python")]
 #[pyclass(name = "EdgeGuard")]
 pub struct PyEdgeGuard {
@@ -1479,23 +1932,69 @@ pub struct PyEdgeGuard {
 #[pymethods]
 impl PyEdgeGuard {
     #[new]
-    #[pyo3(signature = (custom_patterns=None, db_path=None, policy_path=None))]
+    #[pyo3(signature = (custom_patterns=None, db_path=None, policy_path=None, embedded_policy=true))]
     /// `db_path=None` (the default) keeps the audit trail entirely in memory
     /// and writes nothing to disk. Pass an explicit path to persist it - that
     /// is what `dashboard_server.py` reads.
+    ///
+    /// # Policy layer
+    ///
+    /// | call | layer |
+    /// |---|---|
+    /// | `EdgeGuard()` | the rules compiled into this extension |
+    /// | `EdgeGuard(policy_path="my.yaml")` | that file, watched for edits |
+    /// | `EdgeGuard(embedded_policy=False)` | none; built-in detectors only |
+    ///
+    /// **A fresh `pip install` detects `sk-`/`ghp_`/`AKIA` keys with no
+    /// arguments and no file on disk.** It previously did not: those patterns
+    /// live only in `policy.yaml`, every example resolved it as
+    /// `dirname(__file__)/../policy.yaml`, and a wheel has no source tree for
+    /// that to point at - so the common case was a guard that reported every
+    /// OpenAI key as safe.
+    ///
+    /// `policy_path` wins when both are given. Raises `ValueError` if it
+    /// cannot be compiled, rather than falling back to the embedded rules:
+    /// a caller who named a file asked for that file, and quietly substituting
+    /// different rules is how a policy change silently fails to take effect.
     fn new(
         custom_patterns: Option<Vec<String>>,
         db_path: Option<String>,
         policy_path: Option<String>,
-    ) -> Self {
-        let engine = SecurityEngine::new(
+        embedded_policy: bool,
+    ) -> PyResult<Self> {
+        use pyo3::exceptions::PyValueError;
+
+        let engine = SecurityEngine::with_policy_source(
             custom_patterns.unwrap_or_default(),
             db_path.as_deref(),
-            policy_path.as_deref(),
-        );
-        PyEdgeGuard {
+            py_policy_source(policy_path, embedded_policy),
+        )
+        .map_err(PyValueError::new_err)?;
+        Ok(PyEdgeGuard {
             inner: Arc::new(engine),
-        }
+        })
+    }
+
+    /// Scan, returning `(is_safe, violation_code)` and nothing else.
+    ///
+    /// The allocation-free sibling of [`Self::scan`]. `scan` builds a dict:
+    /// four `set_item` calls, a `String` clone for `reason`, another for
+    /// `matched_pattern`. That marshalling costs more than the scan does on a
+    /// short prompt, so the dict - not the engine - is what a Python
+    /// throughput benchmark ends up measuring.
+    ///
+    /// This returns a 2-tuple of primitives. `violation_code` is `0` when
+    /// safe; the codes are the same ones `scan()["violation_code"]` reports,
+    /// so a caller can gate on `code == 0` and look up detail only for the
+    /// small fraction of traffic that fails.
+    ///
+    /// Releases the GIL for the scan itself, like every other entry point
+    /// here.
+    fn scan_fast(&self, py: Python<'_>, prompt: &str) -> (bool, u32) {
+        let inner = Arc::clone(&self.inner);
+        let owned = prompt.to_string();
+        let res = py.detach(move || inner.scan(&owned));
+        (res.is_safe, res.violation_code)
     }
 
     fn scan<'py>(&self, py: Python<'py>, prompt: &str) -> PyResult<Bound<'py, PyDict>> {
@@ -1686,6 +2185,7 @@ impl PyTieredGuard {
         vocab_path=None,
         db_path=None,
         policy_path=None,
+        embedded_policy=true,
         block_threshold=None,
         flag_threshold=None,
     ))]
@@ -1699,6 +2199,7 @@ impl PyTieredGuard {
         vocab_path: Option<String>,
         db_path: Option<String>,
         policy_path: Option<String>,
+        embedded_policy: bool,
         block_threshold: Option<f32>,
         flag_threshold: Option<f32>,
     ) -> PyResult<Self> {
@@ -1725,14 +2226,27 @@ impl PyTieredGuard {
         if let Some(t) = flag_threshold {
             cfg.flag_threshold = t;
         }
+        // Refused at construction, not clamped. A threshold outside [0.0, 1.0]
+        // or a flag above the block bound silently disables a Tier 2 branch,
+        // and a guardrail that is off must not look identical to one that is
+        // on and finding nothing.
+        cfg.validate().map_err(PyValueError::new_err)?;
 
         // The deterministic layer is also the audit sink every tier's verdict
         // is written through, so wiring it in is what makes a Tier 2 block as
         // auditable as a literal match.
-        let mut engine =
-            crate::tier::TieredEngine::new(Arc::new(compiled), cfg).with_deterministic(Arc::new(
-                SecurityEngine::new(Vec::new(), db_path.as_deref(), policy_path.as_deref()),
-            ));
+        //
+        // `?` on the policy load: `policy_path` naming a file that will not
+        // compile fails construction outright. Starting with an empty policy
+        // layer would drop the `sk-`/`ghp_`/`AKIA` detectors on the floor.
+        let deterministic = SecurityEngine::with_policy_source(
+            Vec::new(),
+            db_path.as_deref(),
+            py_policy_source(policy_path, embedded_policy),
+        )
+        .map_err(PyValueError::new_err)?;
+        let mut engine = crate::tier::TieredEngine::new(Arc::new(compiled), cfg)
+            .with_deterministic(Arc::new(deterministic));
 
         let spec = match scorer {
             "off" | "disabled" | "none" => None,
@@ -1788,6 +2302,50 @@ impl PyTieredGuard {
     /// `TieredGuard` without renaming the call site.
     fn scan<'py>(&self, py: Python<'py>, prompt: &str) -> PyResult<Bound<'py, PyDict>> {
         self.inspect(py, prompt)
+    }
+
+    /// Inspect, returning `(verdict, violation_code, rule_id)` and nothing
+    /// else.
+    ///
+    /// The allocation-free sibling of [`Self::inspect`], which builds a dict
+    /// of ~17 entries including a `Vec` of obfuscation names, a nested dict
+    /// for the semantic score, and several `String` clones. On a short prompt
+    /// that marshalling costs more than the scan, which makes a Python
+    /// throughput benchmark a measurement of PyO3, not of the engine.
+    ///
+    /// `verdict` uses **the same integers as the C ABI**, so a Python gate and
+    /// an NGINX filter cannot disagree about what `1` means:
+    ///
+    /// | value | meaning | forward the prompt? |
+    /// |---|---|---|
+    /// | 0 | `pass` | yes |
+    /// | 1 | `needs_semantic_check` | **no** - the engine declined to decide |
+    /// | 2 | `block` | no |
+    ///
+    /// Gate on `verdict == 0`. Gating on `verdict == 2` treats every
+    /// grey-band prompt as cleared, which is the bypass this SDK's own
+    /// examples used to ship.
+    ///
+    /// `rule_id` is `0` when no proximity rule decided - rule ids start at 1
+    /// in every band (`codes::policy_rule_code` and friends reject `0`), so
+    /// the sentinel is unambiguous.
+    fn scan_fast(&self, py: Python<'_>, prompt: &str) -> (u8, u32, u32) {
+        use crate::tier::{DecidedBy, Verdict};
+
+        let inner = Arc::clone(&self.inner);
+        let owned = prompt.to_string();
+        let d = py.detach(move || inner.inspect_owned(&owned));
+
+        let verdict = match d.verdict {
+            Verdict::Pass => 0u8,
+            Verdict::NeedsSemanticCheck => 1,
+            Verdict::Block => 2,
+        };
+        let rule_id = match d.decided_by {
+            DecidedBy::Tier1Rule { rule_id, .. } => rule_id,
+            _ => 0,
+        };
+        (verdict, d.code, rule_id)
     }
 
     /// Counters for the control plane. `model_bypass_ratio` is the one that
@@ -1861,7 +2419,21 @@ impl PyStreamScanner {
     /// scrolled out of the rolling window. Gating on it is therefore correct;
     /// previously it was not, because the scanner forgot.
     fn feed_token<'py>(&mut self, py: Python<'py>, token: &str) -> PyResult<Bound<'py, PyDict>> {
-        let v = self.inner.feed_token(token);
+        // The GIL is released for the scan, as it is on every other entry
+        // point here. This one matters most: it is called once per generated
+        // token, for the whole length of a response, and each call rescans the
+        // entire rolling window rather than just the new token. Holding the
+        // GIL through that serialized every other thread in the host
+        // interpreter against one stream's token rate - so a server guarding
+        // ten concurrent generations paid for them one at a time.
+        //
+        // `token` is copied because `detach` will not let a borrow of Python
+        // memory cross the release (`Ungil`); the copy is a memcpy of a few
+        // bytes against a scan of the whole window.
+        let inner = &mut self.inner;
+        let owned = token.to_string();
+        let v = py.detach(move || inner.feed_token(&owned));
+
         let dict = PyDict::new(py);
         dict.set_item("is_safe", v.is_safe)?;
         dict.set_item("violation_code", v.violation_code)?;
@@ -1908,9 +2480,39 @@ impl PyStreamScanner {
 #[cfg(feature = "python")]
 #[pymodule]
 fn edgeguard(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // The three classes this extension exists to provide. `TieredGuard` and
+    // `StreamScanner` missing from a module that has `EdgeGuard` is the
+    // signature of a shadowing install - see `__build__` below.
     m.add_class::<PyEdgeGuard>()?;
     m.add_class::<PyTieredGuard>()?;
     m.add_class::<PyStreamScanner>()?;
+
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
+    // Provenance, so `import edgeguard` shadowed by something else fails
+    // loudly instead of silently answering with different violation codes.
+    //
+    // This is not hypothetical. A `ctypes` package distributed as
+    // `edgeguard-ai` imports under the name `edgeguard`, ships its own
+    // `policy.yaml`, and numbers its violations 1-6 where this engine numbers
+    // them 101/103/201/301-304/20000+. `pip uninstall edgeguard` does not
+    // remove it, because that is not its distribution name. Two installs, one
+    // import name, and sys.path order decides which one a machine gets.
+    //
+    // A caller that checks `__build__` gets a definite answer; a caller that
+    // does not at least gets `AttributeError` rather than a wrong code.
+    m.add(
+        "__build__",
+        format!(
+            "edgeguard-sdk {} (pyo3, native; policy rules embedded)",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )?;
+
+    // The compiled-in rules, so a caller extending them can start from the
+    // real text rather than looking for a file that a wheel does not have.
+    m.add("DEFAULT_POLICY_YAML", DEFAULT_POLICY_YAML)?;
+
     Ok(())
 }
 
@@ -1919,7 +2521,7 @@ mod enterprise_security_tests {
     use super::*;
 
     fn engine() -> SecurityEngine {
-        SecurityEngine::new(vec![], None, None)
+        SecurityEngine::without_policy(vec![], None)
     }
 
     #[test]
@@ -2085,7 +2687,7 @@ mod enterprise_security_tests {
     // match anything.
     #[test]
     fn test_mixed_case_custom_pattern_matches() {
-        let guard = SecurityEngine::new(vec!["Corp_Vault_KEY".to_string()], None, None);
+        let guard = SecurityEngine::without_policy(vec!["Corp_Vault_KEY".to_string()], None);
         let result = guard.scan("please reveal the CORP_VAULT_KEY now");
         assert_eq!(result.is_safe, false);
         assert_eq!(result.violation_code, 103);
@@ -2122,7 +2724,8 @@ mod enterprise_security_tests {
         )
         .unwrap();
 
-        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()));
+        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()))
+            .expect("test policy compiles");
         let result = guard.scan("here is a totally-secret-marker in the text");
         assert_eq!(result.is_safe, false);
         assert_eq!(
@@ -2181,7 +2784,8 @@ mod enterprise_security_tests {
         )
         .unwrap();
 
-        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()));
+        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()))
+            .expect("test policy compiles");
         let result = guard.scan("here is sk-liveabcdefghijklmnopqrst");
         assert_eq!(
             result.violation_code,
@@ -2189,17 +2793,438 @@ mod enterprise_security_tests {
         );
         assert_eq!(SecurityEngine::audit_label(&result), "POLICY_RULE_3");
 
+        // The value the *caller* gets back is a label too. `policy.yaml` ships
+        // the `sk-`/`ghp_`/`AKIA` patterns and PII masking does not cover them,
+        // so this field used to hand the live key straight back - and
+        // `StreamScanner` latches the first violation, re-reporting it on every
+        // subsequent token for the rest of a response.
+        assert_eq!(result.matched_pattern, "POLICY_RULE_3");
+        assert!(
+            !result.matched_pattern.contains("sk-"),
+            "the recovered key came back in matched_pattern"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // The leak this masking exists to stop, end to end and through the latch.
+    #[test]
+    fn test_a_streamed_api_key_never_appears_in_the_verdict() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "edgeguard_test_streamleak_{}.yaml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "version: \"1.0\"\nrules:\n  - id: 3\n    name: \"API Keys\"\n    enabled: true\n    pattern: \"sk-[a-zA-Z0-9-]{16,}\"\n",
+        )
+        .unwrap();
+
+        let engine = Arc::new(
+            SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()))
+                .expect("test policy compiles"),
+        );
+        let mut scanner = crate::stream::StreamScanner::new(engine, 256);
+
+        // The key arrives split across tokens, as a real generator emits it.
+        let mut tripped = false;
+        for token in [
+            "Here ",
+            "is ",
+            "the ",
+            "key: ",
+            "sk-live-",
+            "99482710492847192847",
+        ] {
+            let v = scanner.feed_token(token);
+            assert!(
+                !v.matched_pattern.contains("sk-") && !v.matched_pattern.contains("99482710"),
+                "the key came back in matched_pattern: {:?}",
+                v.matched_pattern
+            );
+            tripped |= !v.is_safe;
+        }
+        assert!(tripped, "the policy rule did not fire at all");
+
+        // And on every later token, once the latch is holding the verdict and
+        // the payload has scrolled out of the window. This is the part that
+        // turned one leak into one leak per token for the rest of a response.
+        for _ in 0..40 {
+            let v = scanner.feed_token("perfectly ordinary filler text ");
+            assert!(!v.is_safe, "the latch must hold");
+            assert!(
+                !v.matched_pattern.contains("sk-") && !v.matched_pattern.contains("99482710"),
+                "the latched verdict re-emitted the key: {:?}",
+                v.matched_pattern
+            );
+        }
+        let last = scanner.feed_token(" done.");
+        assert!(
+            last.latched,
+            "the payload should be out of the window by now"
+        );
+        assert_eq!(last.matched_pattern, "POLICY_RULE_3");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- Unicode digit evasion ------------------------------------------
+
+    /// Rewrite the ASCII digits of `s` into another Unicode decimal block.
+    fn in_digit_block(s: &str, base: u32) -> String {
+        s.chars()
+            .map(|c| match c.to_digit(10) {
+                Some(d) => char::from_u32(base + d).unwrap(),
+                None => c,
+            })
+            .collect()
+    }
+
+    // A Luhn-valid card written in fullwidth or Arabic-Indic digits used to
+    // scan completely clean: the detectors are written with `[0-9]`, and
+    // `char::to_digit` returns None for a non-ASCII digit, so the regex missed
+    // it AND the checksum would have rejected it anyway. PII detection runs on
+    // the original prompt (the injection lane's normalizer destroys digit
+    // runs), so nothing else was folding these either.
+    #[test]
+    fn test_pii_is_detected_through_every_unicode_digit_block() {
+        let guard = engine();
+        // (payload, expected code) across the detectors that read digits.
+        let cases: [(&str, u32); 2] = [
+            ("my card is 4532-0150-0000-0007", 301),
+            ("my id is 123456782", 304),
+        ];
+        for (ascii, want) in cases {
+            assert_eq!(guard.scan(ascii).violation_code, want, "ascii {:?}", ascii);
+            for base in DIGIT_BLOCK_BASES {
+                if base == 0x30 {
+                    continue; // ASCII itself, covered above
+                }
+                let evaded = in_digit_block(ascii, base);
+                let r = guard.scan(&evaded);
+                assert_eq!(
+                    r.violation_code, want,
+                    "block U+{:04X} evaded detection: {:?}",
+                    base, evaded
+                );
+                // ...and the value still never comes back to the caller.
+                assert!(!r.matched_pattern.contains(char::is_numeric));
+            }
+        }
+    }
+
+    // Folding changes byte lengths, so a span found in the folded text does
+    // not index the caller's string. `sanitize` slices the ORIGINAL with these
+    // ranges: a stale offset redacts the wrong bytes or panics on a
+    // non-char-boundary.
+    #[test]
+    fn test_redaction_spans_survive_digit_folding() {
+        let guard = engine();
+        for base in [0xFF10u32, 0x0660, 0x0966, 0x1D7CE] {
+            let card = in_digit_block("4532-0150-0000-0007", base);
+            let prompt = format!("charge {} today please", card);
+            let masked = guard.sanitize(&prompt);
+            // The span landed exactly on the card: nothing either side of it
+            // was eaten, and nothing was left behind.
+            assert!(
+                masked.starts_with("charge ") && masked.ends_with(" today please"),
+                "U+{:04X}: surrounding text was disturbed: {:?}",
+                base,
+                masked
+            );
+            assert!(
+                !masked.contains(&card),
+                "U+{:04X}: the card survived verbatim: {:?}",
+                base,
+                masked
+            );
+            // The interior digits are gone in every representation. Two
+            // redaction forms are correct here and both appear: `strip_invisible`
+            // applies NFKC, which folds fullwidth and mathematical digits to
+            // ASCII, so those reach the card masker as digits and get the
+            // documented `4532-****-****-0007` form; Arabic-Indic and
+            // Devanagari are not NFKC-equivalent to ASCII, so the masker sees
+            // no ascii digits and redacts the whole run instead.
+            for interior in ["0150", "0000", &in_digit_block("0150", base)] {
+                assert!(
+                    !masked.contains(interior),
+                    "U+{:04X}: interior digits {:?} survived: {:?}",
+                    base,
+                    interior,
+                    masked
+                );
+            }
+            assert!(
+                masked.contains("****") || masked.contains("[REDACTED_CARD]"),
+                "U+{:04X}: nothing was redacted: {:?}",
+                base,
+                masked
+            );
+        }
+    }
+
+    // The fold must not invent digits. A non-Nd code point that happens to sit
+    // near a digit block, and Unicode's non-decimal numerics, must pass
+    // through untouched - otherwise the fold becomes a false-positive source.
+    #[test]
+    fn test_digit_folding_does_not_invent_digits() {
+        // Roman numerals (Nl) and vulgar fractions (No) are numeric but not
+        // decimal digits; `char::is_numeric` accepts them and this must not.
+        for c in ['Ⅷ', '½', '²', '〇', 'A', 'ن', ' '] {
+            assert_eq!(fold_digit(c), None, "{:?} was folded", c);
+        }
+        for base in DIGIT_BLOCK_BASES {
+            // The code point just past each block is not a digit of it.
+            if let Some(after) = char::from_u32(base + 10) {
+                if let Some(folded) = fold_digit(after) {
+                    // If it folds, it must be because it genuinely starts
+                    // another block - never because the search ran off the end.
+                    assert!(
+                        DIGIT_BLOCK_BASES.contains(&(base + 10)),
+                        "U+{:04X} folded to {:?} but starts no block",
+                        base + 10,
+                        folded as char
+                    );
+                }
+            }
+        }
+        // ASCII is reported as "nothing to fold" by design, so the caller can
+        // distinguish it from "this needed rewriting" without a second test.
+        for d in 0..10u32 {
+            assert_eq!(fold_digit(char::from_u32(0x30 + d).unwrap()), None);
+        }
+        // Every other block folds to exactly 0-9, in order.
+        for base in DIGIT_BLOCK_BASES.iter().copied().filter(|&b| b != 0x30) {
+            for d in 0..10u32 {
+                let c = char::from_u32(base + d).unwrap();
+                assert_eq!(
+                    fold_digit(c).map(|b| b - b'0'),
+                    Some(d as u8),
+                    "U+{:04X}+{}",
+                    base,
+                    d
+                );
+            }
+        }
+    }
+
+    // Offset mapping, exercised directly with mixed widths.
+    #[test]
+    fn test_digit_fold_offset_mapping() {
+        // 'x' 1B, fullwidth '4' 3B, '5' 1B, Arabic-Indic '6' 2B, 'y' 1B
+        let src = "x\u{FF14}5\u{0666}y";
+        let f = DigitFolded::new(src);
+        assert_eq!(f.as_str(), "x456y");
+        // Each folded offset maps to the start of the char that produced it.
+        for (folded, original) in [(0, 0), (1, 1), (2, 4), (3, 5), (4, 7), (5, 8)] {
+            assert_eq!(
+                f.original_offset(folded),
+                original,
+                "folded {} -> expected {}",
+                folded,
+                original
+            );
+        }
+        assert_eq!(f.original_offset(5), src.len());
+        // A span over the digits slices the original cleanly.
+        let sp = f.original_span(1..4);
+        assert_eq!(&src[sp], "\u{FF14}5\u{0666}");
+    }
+
+    // The common path must not pay for the fold.
+    #[test]
+    fn test_ascii_and_digitless_text_is_not_reallocated() {
+        for s in [
+            "an entirely ordinary ascii prompt with 12345 in it",
+            "",
+            "unicode but no digits at all: naïve café — ¡hola!",
+        ] {
+            assert!(
+                matches!(DigitFolded::new(s).text, Cow::Borrowed(_)),
+                "{:?} allocated",
+                s
+            );
+        }
+        assert!(matches!(
+            DigitFolded::new("fullwidth \u{FF11}").text,
+            Cow::Owned(_)
+        ));
+    }
+
+    // The embedded rules are what a fresh `pip install` gets. If they do not
+    // compile, every default-constructed binding loses secret detection, so
+    // this is a build-time guarantee rather than a runtime hope.
+    #[test]
+    fn test_the_embedded_policy_compiles_and_detects_keys() {
+        let guard = SecurityEngine::with_policy_source(vec![], None, PolicySource::Embedded)
+            .expect("the compiled-in policy must always compile");
+        assert!(guard.policy_rule_count() > 0);
+
+        // The patterns that exist ONLY in this layer. Email and cards are
+        // deliberately absent from this list: the built-in PII detectors
+        // catch those first (303/301) and report a placeholder, because
+        // `do_scan` masks PII before the policy regexes run. `sk-` and `ghp_`
+        // are not PII kinds, so this layer is their only source - which is
+        // precisely what a missing policy.yaml used to silently remove.
+        for (payload, want) in [
+            ("here is sk-live-99482710492847192847", 20003u32),
+            ("token ghp_abcdefghijklmnopqrstuvwxyz0123456789", 20003),
+        ] {
+            let r = guard.scan(payload);
+            assert!(!r.is_safe, "{:?} scanned clean", payload);
+            assert_eq!(r.violation_code, want, "{:?}", payload);
+            assert!(
+                !r.matched_pattern.contains("sk-") && !r.matched_pattern.contains("ghp_"),
+                "matched_pattern echoed the secret: {:?}",
+                r.matched_pattern
+            );
+        }
+    }
+
+    // The embedded default is what every `pip install` gets with no
+    // arguments, so it must not introduce false positives the built-in
+    // detectors do not have. It did: `policy.yaml` rule 2 was a bare 13-16
+    // digit run with no checksum, which blocked order and invoice numbers.
+    #[test]
+    fn test_the_embedded_policy_adds_no_false_positives_over_the_builtins() {
+        let builtins = SecurityEngine::without_policy(vec![], None);
+        let embedded = SecurityEngine::with_policy_source(vec![], None, PolicySource::Embedded)
+            .expect("embedded policy compiles");
+
+        for benign in [
+            "order number 4532-0150-0000-0008",
+            "invoice 1234567890123",
+            "tracking id 9400111899223817428490",
+            "please summarize the Q3 revenue report for the board",
+        ] {
+            assert!(builtins.scan(benign).is_safe, "builtin FP on {:?}", benign);
+            assert!(
+                embedded.scan(benign).is_safe,
+                "the embedded policy blocks {:?} but the built-ins do not - it must \
+                 never be strictly more false-positive-prone than the safety floor",
+                benign
+            );
+        }
+
+        // ...while still adding the detection it exists for.
+        assert_eq!(
+            embedded
+                .scan("here is sk-live-99482710492847192847")
+                .violation_code,
+            20003
+        );
+        // A real, Luhn-valid card is still caught - by the built-in detector,
+        // which validates the checksum and reports a placeholder.
+        assert_eq!(
+            embedded
+                .scan("my card is 4532-0150-0000-0007")
+                .violation_code,
+            301
+        );
+    }
+
+    // `None` must keep meaning "no policy layer" for Rust callers. Only the
+    // Python binding defaults to the embedded rules.
+    #[test]
+    fn test_rust_none_is_disabled_not_embedded() {
+        assert_eq!(
+            PolicySource::from_optional_path(None),
+            PolicySource::Disabled
+        );
+        assert_eq!(
+            PolicySource::from_optional_path(Some("p.yaml")),
+            PolicySource::Path("p.yaml".to_string())
+        );
+        let guard = SecurityEngine::without_policy(vec![], None);
+        assert_eq!(guard.policy_rule_count(), 0);
+        // ...and therefore does NOT see an OpenAI key, which is exactly why
+        // the binding does not default to this.
+        assert!(guard.scan("here is sk-live-99482710492847192847").is_safe);
+    }
+
+    // A policy path that cannot be compiled must fail construction. It used to
+    // warn on stderr and continue with an empty policy layer, which silently
+    // removed the only source of API-key detection while every scan kept
+    // reporting `is_safe: true`.
+    #[test]
+    fn test_a_policy_path_that_does_not_load_fails_construction() {
+        let missing = std::env::temp_dir().join(format!(
+            "edgeguard_test_absent_{}_{}.yaml",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&missing);
+        let err = SecurityEngine::new(vec![], None, Some(missing.to_str().unwrap()))
+            .err()
+            .expect("a missing policy file must not yield an engine");
+        assert!(err.contains("cannot read policy file"), "{}", err);
+
+        let bad = std::env::temp_dir().join(format!(
+            "edgeguard_test_badyaml_{}_{}.yaml",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&bad, "rules: [ unterminated").unwrap();
+        let err = SecurityEngine::new(vec![], None, Some(bad.to_str().unwrap()))
+            .err()
+            .expect("malformed policy YAML must not yield an engine");
+        assert!(err.contains("invalid policy YAML"), "{}", err);
+        let _ = std::fs::remove_file(&bad);
+
+        // No policy path at all is still a legitimate configuration: it means
+        // "this deployment runs the built-in detectors only", not "the rules I
+        // asked for went missing".
+        assert!(SecurityEngine::new(vec![], None, None).is_ok());
+    }
+
+    // The audit trail and the deferred store both hold material a local user
+    // must not read. Nothing in this crate used to set a mode, so both were
+    // created at 0644.
+    #[cfg(unix)]
+    #[test]
+    fn test_a_created_store_is_owner_readable_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "edgeguard_test_perm_{}_{}.db",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        create_private_file(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "created store is mode {:o}", mode);
+
+        // An existing file from an earlier build is the case that most needs
+        // tightening, so the guard is not create-only.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        create_private_file(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "pre-existing store left at mode {:o}", mode);
+
         let _ = std::fs::remove_file(&path);
     }
 
     // A custom pattern is frequently the secret itself, so its value must not
     // reach the trail even though the caller still gets it back.
     #[test]
-    fn test_custom_pattern_value_is_not_persisted() {
-        let guard = SecurityEngine::new(vec!["corp_vault_key".to_string()], None, None);
+    fn test_custom_pattern_value_is_neither_returned_nor_persisted() {
+        // This test used to assert `matched_pattern == "corp_vault_key"` and
+        // check only that the *audit label* was masked. The returned value was
+        // the leak: `custom_patterns` is where an operator puts an internal key
+        // format or a codename, so the matched text is the secret the rule
+        // exists to find, and a host that logs the verdict copies it into its
+        // own logs. Both halves are now labels.
+        let guard = SecurityEngine::without_policy(vec!["corp_vault_key".to_string()], None);
         let result = guard.scan("please use corp_vault_key now");
         assert_eq!(result.violation_code, 103);
-        assert_eq!(result.matched_pattern, "corp_vault_key");
+        assert_eq!(result.matched_pattern, "CUSTOM_PATTERN_MATCH");
+        assert!(
+            !result.matched_pattern.contains("corp_vault_key"),
+            "the custom pattern's value came back to the caller"
+        );
         assert_eq!(SecurityEngine::audit_label(&result), "CUSTOM_PATTERN_MATCH");
     }
 
@@ -2228,7 +3253,8 @@ mod enterprise_security_tests {
         )
         .unwrap();
 
-        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()));
+        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()))
+            .expect("test policy compiles");
         let result = guard.scan("this text contains should-not-trigger verbatim");
         assert!(result.is_safe);
 
@@ -2246,7 +3272,8 @@ mod enterprise_security_tests {
         ));
         std::fs::write(&path, "version: \"1.0\"\nrules: []\n").unwrap();
 
-        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()));
+        let guard = SecurityEngine::new(vec![], None, Some(path.to_str().unwrap()))
+            .expect("test policy compiles");
         let before = guard.scan("mentions banana-code-77 nowhere dangerous");
         assert!(before.is_safe);
 
@@ -2304,13 +3331,13 @@ mod sophisticated_fuzz_tests {
         // against - the engine must never crash the host process.
         #[test]
         fn fuzz_edgeguard_resilience(s in ".*") {
-            let guard = SecurityEngine::new(vec![], None, None);
+            let guard = SecurityEngine::without_policy(vec![], None);
             let _ = guard.scan(&s);
         }
 
         #[test]
         fn fuzz_adversarial_vectors(prefix in "[a-zA-Z0-9]{0,20}", suffix in "[a-zA-Z0-9]{0,20}") {
-            let guard = SecurityEngine::new(vec![], None, None);
+            let guard = SecurityEngine::without_policy(vec![], None);
             let attack_payload = format!("{} \u{202E} {} \u{200B} \0", prefix, suffix);
             let res = guard.scan(&attack_payload);
             // Must never panic (proptest enforces that on its own), and must
@@ -2320,7 +3347,7 @@ mod sophisticated_fuzz_tests {
 
         #[test]
         fn fuzz_sanitize_never_panics(s in ".*") {
-            let guard = SecurityEngine::new(vec![], None, None);
+            let guard = SecurityEngine::without_policy(vec![], None);
             let sanitized_once = guard.sanitize(&s);
             // A second pass over already-sanitized output must not panic either.
             let _ = guard.sanitize(&sanitized_once);

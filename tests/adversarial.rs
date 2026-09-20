@@ -302,7 +302,7 @@ fn a_literal_flood_does_not_permanently_inflate_the_per_thread_scratch() {
 fn the_redaction_api_refuses_what_the_scan_api_refuses() {
     // sanitize() does strictly more work per byte than scan(), so a size
     // limit on scan() alone is not a size limit.
-    let eng = SecurityEngine::new(vec![], None, None);
+    let eng = SecurityEngine::without_policy(vec![], None);
     let huge = grow(
         "card 4532-0150-0000-0007 ",
         edgeguard::MAX_SCAN_BYTES + 1024,
@@ -598,7 +598,7 @@ fn a_long_randomized_hostile_run_never_panics_and_never_allows_a_known_payload()
 fn structured_garbage_never_panics_either_api() {
     const SEED: u64 = 0xDEADBEEFCAFEF00D;
     const CASES: usize = 20_000;
-    let engine = SecurityEngine::new(vec!["corp_vault_key".into()], None, None);
+    let engine = SecurityEngine::without_policy(vec!["corp_vault_key".into()], None);
     let tiered = TieredEngine::with_baseline();
     let mut rng = XorShift(SEED);
 
