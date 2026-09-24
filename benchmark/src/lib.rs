@@ -3,26 +3,36 @@
 //!
 //! This crate evaluates the engine as a **selective classifier**: a router
 //! whose three outcomes are PASS, BLOCK, and ESCALATE, where ESCALATE is an
-//! explicit refusal to answer rather than a verdict. Scoring it as if it were
-//! a binary classifier - collapsing ESCALATE into either PASS or BLOCK - would
-//! measure something the engine does not claim to be.
+//! explicit refusal to answer rather than a verdict. Scoring it as a binary
+//! classifier - collapsing ESCALATE into PASS or BLOCK - would measure
+//! something the engine does not claim to be.
+//!
+//! It measures the engine across all three channels. EdgeGuard is a
+//! deterministic fast path over **content facts** (INPUT/OUTPUT) and
+//! **structured action facts** (ACTION), so those are separately reported and
+//! neither is allowed to stand in for the whole. See `docs/DESIGN.md`, which
+//! keeps the architectural thesis, the frozen implementation, and future
+//! potential in three explicitly separate sections.
 //!
 //! # Layout
 //!
-//! - [`schema`] - the two disjoint sides of a case: what the engine sees, and
-//!   the ground truth it must never see.
-//! - [`corpus`] - loading, coherence validation, and the leakage lint.
-//! - [`metrics`] - every rate and percentile, with explicit denominators.
-//! - [`baselines`] - the routers under comparison, including the ones that
-//!   report as unavailable rather than being imitated.
+//! - [`schema`] - what the engine sees, and the ground truth it never sees.
+//! - [`policy_env`] - frozen, independently authored ACTION policy
+//!   environments. A case references one; a case never defines rules.
+//! - [`corpus`] - loading, coherence validation, and the leakage lints.
+//! - [`locks`] - classification, policy-environment, and holdout-burn freezes.
+//! - [`metrics`] - raw confusion counts, every rate, and the percentiles.
+//! - [`baselines`] - routers under comparison, including the ones that report
+//!   as unavailable rather than being imitated.
 //! - [`freeze`] - verification that the engine has not moved.
 //!
-//! The corpus itself, the case generators, and the runner are added after the
-//! design in `docs/DESIGN.md` is reviewed. Nothing in this crate may require
-//! an edit to the frozen engine.
+//! The corpus, the generators, and the runner follow the design review.
+//! Nothing here may require an edit to the frozen engine.
 
 pub mod baselines;
 pub mod corpus;
 pub mod freeze;
+pub mod locks;
 pub mod metrics;
+pub mod policy_env;
 pub mod schema;

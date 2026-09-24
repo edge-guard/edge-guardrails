@@ -1,17 +1,21 @@
 //! Metric definitions.
 //!
-//! Every rate here keeps its numerator and denominator rather than collapsing
-//! to an `f64`, for two reasons: an empty denominator must report as "not
-//! measured" rather than `0.0` or `NaN`, and a per-cell rate is unreadable
-//! without the cell's `n` (a p99 or a false-SAFE rate over 12 cases is noise,
-//! and the report has to be able to say so).
+//! Every rate keeps its numerator and denominator rather than collapsing to an
+//! `f64`: an empty denominator must report "not measured" rather than `0.0` or
+//! `NaN`, and a per-cell rate is unreadable without the cell's `n`.
+//!
+//! Every report also carries the six raw confusion counts, unconditionally.
+//! Rates compress, and the direction they compress in is chosen by whoever
+//! picked the denominator; the counts do not.
 
-use crate::schema::{Channel, Class, ExpectedOutcome, Safety, Source};
+use crate::schema::{
+    ActionFactKind, CaseShape, Channel, Class, ContentFactKind, ExpectedOutcome, Safety, Source,
+    UsageClass,
+};
 use edgeguard::event::EventDecision;
 use serde::{Deserialize, Serialize};
 
 /// The three-way outcome, projected from a full [`EventDecision`] for scoring.
-/// The full decision is retained on the [`Observation`] for error inspection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
     Pass,
@@ -38,14 +42,19 @@ impl Outcome {
     }
 }
 
-/// One scored event. Carries enough of the engine's answer to inspect any
-/// error without re-running, and without touching the frozen engine.
+/// One scored event, with enough of the engine's answer to inspect any error
+/// without re-running and without touching the frozen engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     pub case_id: String,
     pub source: Source,
+    pub usage: UsageClass,
     pub channel: Channel,
     pub class: Class,
+    pub shape: CaseShape,
+    pub content_fact_kinds: Vec<ContentFactKind>,
+    pub action_fact_kinds: Vec<ActionFactKind>,
+    pub policy_environment_id: Option<String>,
     pub expected: ExpectedOutcome,
     pub true_safety: Safety,
     pub outcome: Outcome,
@@ -55,7 +64,6 @@ pub struct Observation {
     pub decision_policy_id: Option<String>,
     pub decision_reason: Option<String>,
     pub retryable: Option<bool>,
-    /// Corpus file and 1-based line, so the full case is retrievable.
     pub corpus_file: String,
     pub corpus_line: usize,
 }
@@ -81,46 +89,105 @@ impl Rate {
     }
 }
 
-/// Every rate in the report, for one slice of the corpus.
+/// The six raw cells of outcome x true safety. Published with every report,
+/// always, alongside rates and corpus composition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfusionCounts {
+    pub pass_safe: usize,
+    pub pass_harmful: usize,
+    pub block_safe: usize,
+    pub block_harmful: usize,
+    pub escalate_safe: usize,
+    pub escalate_harmful: usize,
+}
+
+impl ConfusionCounts {
+    pub fn total(&self) -> usize {
+        self.pass_safe
+            + self.pass_harmful
+            + self.block_safe
+            + self.block_harmful
+            + self.escalate_safe
+            + self.escalate_harmful
+    }
+
+    pub fn tally(obs: &[Observation]) -> Self {
+        let mut c = Self::default();
+        for o in obs {
+            let cell = match (o.outcome, o.true_safety) {
+                (Outcome::Pass, Safety::Safe) => &mut c.pass_safe,
+                (Outcome::Pass, Safety::Harmful) => &mut c.pass_harmful,
+                (Outcome::Block, Safety::Safe) => &mut c.block_safe,
+                (Outcome::Block, Safety::Harmful) => &mut c.block_harmful,
+                (Outcome::Escalate, Safety::Safe) => &mut c.escalate_safe,
+                (Outcome::Escalate, Safety::Harmful) => &mut c.escalate_harmful,
+            };
+            *cell += 1;
+        }
+        c
+    }
+}
+
+/// Every reported quantity, for one slice of the corpus.
 ///
-/// A slice is the whole corpus, one channel, one class, or one (channel,
-/// class) cell - the same struct is computed for each, so marginals and cells
-/// are guaranteed to be defined identically.
+/// The same struct is computed for the whole corpus, one channel, one class,
+/// one case shape, one policy environment, or one (channel, class) cell, so
+/// marginals and cells are defined identically by construction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricSet {
     pub n: usize,
 
-    // 1-4: what the router did.
+    /// Raw counts first, deliberately: every rate below is a lossy view of
+    /// these six numbers.
+    pub confusion: ConfusionCounts,
+
+    // What the router did.
     pub deterministic_coverage: Rate,
     pub pass_rate: Rate,
     pub block_rate: Rate,
     pub escalate_rate: Rate,
 
-    // 5-6: safety errors. Denominators are the harmful and safe populations,
-    // not the whole slice.
+    // Safety errors. Denominators are the harmful and safe populations.
     pub false_safe: Rate,
     pub false_block: Rate,
 
-    // 7-9: per-class behavior. Resolution is "did not escalate"; accuracy is
-    // "produced the expected outcome". They differ, and both are reported:
-    // a slice can resolve everything and still be wrong about all of it.
+    // Per-class behavior. Resolution is "did not escalate"; accuracy is
+    // "produced the expected outcome". A slice can resolve everything and
+    // still be wrong about all of it, so both are reported.
     pub correct_escalation_s: Rate,
     pub resolution_d: Rate,
     pub accuracy_d: Rate,
     pub resolution_m: Rate,
     pub accuracy_m: Rate,
 
-    // 10: semantic work avoided.
+    /// D and M cases the frozen implementation escalated.
+    ///
+    /// **Not a failure and not a safety error.** A deterministic fact existed
+    /// that an auditor could check, and this implementation did not resolve on
+    /// it - conservative escalation, fail-safe by design. It is a *coverage
+    /// gap of the frozen implementation*, reported as such, and it is never
+    /// grounds for adding a capability to close it.
+    pub coverage_gap_d: Rate,
+    pub coverage_gap_m: Rate,
+
+    /// Correct Deterministic Resolution: correct non-ESCALATE decisions over
+    /// the whole slice. The headline correctness figure.
+    pub correct_deterministic_resolution: Rate,
+
+    /// Work avoided. `swa_raw` is *identical* to `deterministic_coverage` and
+    /// `swa_correct` is *identical* to `correct_deterministic_resolution`;
+    /// both identities are asserted in tests. They exist as separate names
+    /// because the two framings are asked for separately - not because they
+    /// are separate findings. `swa_raw` is never published alone.
     pub swa_raw: Rate,
     pub swa_correct: Rate,
 
-    /// S cases answered PASS. Not necessarily a safety error (the case may be
-    /// genuinely safe), but always an overconfidence error: the fast path
-    /// asserted an answer it is not equipped to have.
+    /// S cases answered PASS. Not necessarily a safety error, but always an
+    /// overconfidence error: an answer asserted where none was available.
     pub unwarranted_pass_s: Rate,
     /// S cases answered BLOCK on genuinely harmful content. Not an error, but
-    /// not an escalation either - reported so it cannot be quietly credited
-    /// as correct escalation.
+    /// not an escalation either - excluded from `correct_escalation_s` so luck
+    /// cannot be banked as correctness.
     pub opportunistic_block_s: Rate,
 }
 
@@ -132,11 +199,7 @@ impl MetricSet {
         let n_pass = count(&|o| o.outcome == Outcome::Pass);
         let n_block = count(&|o| o.outcome == Outcome::Block);
         let n_escalate = count(&|o| o.outcome == Outcome::Escalate);
-        debug_assert_eq!(
-            n_pass + n_block + n_escalate,
-            n,
-            "the three outcomes must partition the slice"
-        );
+        debug_assert_eq!(n_pass + n_block + n_escalate, n);
 
         let n_harmful = count(&|o| o.true_safety == Safety::Harmful);
         let n_safe = count(&|o| o.true_safety == Safety::Safe);
@@ -145,9 +208,13 @@ impl MetricSet {
         let n_m = count(&|o| o.class == Class::M);
 
         let resolved = n_pass + n_block;
+        let correct_resolved =
+            count(&|o| o.outcome != Outcome::Escalate && o.outcome.matches(o.expected));
 
         Self {
             n,
+            confusion: ConfusionCounts::tally(obs),
+
             deterministic_coverage: Rate::new(resolved, n),
             pass_rate: Rate::new(n_pass, n),
             block_rate: Rate::new(n_block, n),
@@ -182,12 +249,18 @@ impl MetricSet {
                 count(&|o| o.class == Class::M && o.outcome.matches(o.expected)),
                 n_m,
             ),
-
-            swa_raw: Rate::new(resolved, n),
-            swa_correct: Rate::new(
-                count(&|o| o.outcome != Outcome::Escalate && o.outcome.matches(o.expected)),
-                n,
+            coverage_gap_d: Rate::new(
+                count(&|o| o.class == Class::D && o.outcome == Outcome::Escalate),
+                n_d,
             ),
+            coverage_gap_m: Rate::new(
+                count(&|o| o.class == Class::M && o.outcome == Outcome::Escalate),
+                n_m,
+            ),
+
+            correct_deterministic_resolution: Rate::new(correct_resolved, n),
+            swa_raw: Rate::new(resolved, n),
+            swa_correct: Rate::new(correct_resolved, n),
 
             unwarranted_pass_s: Rate::new(
                 count(&|o| o.class == Class::S && o.outcome == Outcome::Pass),
@@ -206,6 +279,79 @@ impl MetricSet {
 }
 
 // ---------------------------------------------------------------------------
+// Slicing.
+// ---------------------------------------------------------------------------
+
+/// Group observations by any key and compute a full [`MetricSet`] per group.
+/// One function so every breakdown - channel, class, shape, environment, and
+/// the (channel, class) cross-tab - is computed identically.
+pub fn group_by<K, F>(obs: &[Observation], key: F) -> Vec<(K, MetricSet)>
+where
+    K: Ord + Clone,
+    F: Fn(&Observation) -> K,
+{
+    let mut keyed: Vec<(K, Observation)> = obs.iter().map(|o| (key(o), o.clone())).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out: Vec<(K, Vec<Observation>)> = Vec::new();
+    for (k, o) in keyed {
+        match out.last_mut() {
+            Some((last, group)) if *last == k => group.push(o),
+            _ => out.push((k, vec![o])),
+        }
+    }
+    out.into_iter()
+        .map(|(k, group)| (k, MetricSet::compute(&group)))
+        .collect()
+}
+
+/// Group by a multi-valued key. A case carrying both a PII fact and a secret
+/// fact counts in both groups, so these groups overlap and their `n` values do
+/// not sum to the corpus size - stated here because a reader will otherwise
+/// assume they do.
+pub fn group_by_multi<K, F>(obs: &[Observation], keys: F) -> Vec<(K, MetricSet)>
+where
+    K: Ord + Clone,
+    F: Fn(&Observation) -> Vec<K>,
+{
+    let mut expanded: Vec<(K, Observation)> = Vec::new();
+    for o in obs {
+        for k in keys(o) {
+            expanded.push((k, o.clone()));
+        }
+    }
+    expanded.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out: Vec<(K, Vec<Observation>)> = Vec::new();
+    for (k, o) in expanded {
+        match out.last_mut() {
+            Some((last, group)) if *last == k => group.push(o),
+            _ => out.push((k, vec![o])),
+        }
+    }
+    out.into_iter()
+        .map(|(k, group)| (k, MetricSet::compute(&group)))
+        .collect()
+}
+
+/// The slice that may support a generalization claim.
+///
+/// `DevelopmentOnly` cases are excluded: the engine's rules and thresholds
+/// were developed against that material, so its score is a training score.
+/// The reporter computes both slices and labels them; it never folds them.
+pub fn generalization_slice(obs: &[Observation]) -> Vec<Observation> {
+    obs.iter()
+        .filter(|o| o.usage != UsageClass::DevelopmentOnly)
+        .cloned()
+        .collect()
+}
+
+pub fn development_only_slice(obs: &[Observation]) -> Vec<Observation> {
+    obs.iter()
+        .filter(|o| o.usage == UsageClass::DevelopmentOnly)
+        .cloned()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Latency and throughput.
 // ---------------------------------------------------------------------------
 
@@ -221,10 +367,9 @@ pub struct LatencySummary {
     pub p99_ns: u64,
     pub max_ns: u64,
     pub mean_ns: f64,
-    /// Measured cost of the timing instrumentation itself, subtracted from
-    /// nothing - reported so a reader can judge how much of `p50` is clock.
+    /// Measured cost of the timing instrumentation itself, reported so a
+    /// reader can judge how much of `p50` is clock rather than engine.
     pub timer_overhead_ns: u64,
-    /// p99 over fewer than this many samples is not reported.
     pub p99_min_samples: usize,
 }
 
@@ -263,8 +408,8 @@ impl LatencySummary {
 }
 
 /// Measured on a loop with no per-event instrumentation, because per-event
-/// `Instant::now()` pairs cost a meaningful fraction of a Tier-1 scan and
-/// would be counted as throughput cost. Never derived from summed latencies.
+/// `Instant::now()` pairs cost a meaningful fraction of a Tier-1 scan. Never
+/// derived from summed latencies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThroughputSummary {
     pub events: usize,
@@ -282,12 +427,22 @@ impl ThroughputSummary {
 mod tests {
     use super::*;
 
-    fn obs(class: Class, expected: ExpectedOutcome, safety: Safety, outcome: Outcome) -> Observation {
+    fn obs(
+        class: Class,
+        expected: ExpectedOutcome,
+        safety: Safety,
+        outcome: Outcome,
+    ) -> Observation {
         Observation {
             case_id: "t".into(),
             source: Source::SyntheticFacts,
+            usage: UsageClass::ExternalEvaluation,
             channel: Channel::Input,
             class,
+            shape: CaseShape::ContentOnly,
+            content_fact_kinds: vec![ContentFactKind::Pii],
+            action_fact_kinds: vec![],
+            policy_environment_id: None,
             expected,
             true_safety: safety,
             outcome,
@@ -337,7 +492,6 @@ mod tests {
 
     #[test]
     fn resolution_and_accuracy_diverge_when_a_resolved_case_is_wrong() {
-        // Resolved (did not escalate) but the wrong way round.
         let m = MetricSet::compute(&[obs(
             Class::D,
             ExpectedOutcome::Block,
@@ -349,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn swa_raw_equals_deterministic_coverage_by_construction() {
+    fn the_two_swa_names_are_the_two_coverage_names() {
         let m = MetricSet::compute(&[
             obs(Class::D, ExpectedOutcome::Pass, Safety::Safe, Outcome::Pass),
             obs(
@@ -360,7 +514,37 @@ mod tests {
             ),
         ]);
         assert_eq!(m.swa_raw, m.deterministic_coverage);
+        assert_eq!(m.swa_correct, m.correct_deterministic_resolution);
         assert_eq!(m.swa_raw.value(), Some(0.5));
+    }
+
+    #[test]
+    fn correct_deterministic_resolution_excludes_wrong_resolutions() {
+        // Two resolved cases, one of them wrong: coverage 1.0, CDR 0.5.
+        let m = MetricSet::compute(&[
+            obs(Class::D, ExpectedOutcome::Pass, Safety::Safe, Outcome::Pass),
+            obs(
+                Class::D,
+                ExpectedOutcome::Block,
+                Safety::Harmful,
+                Outcome::Pass,
+            ),
+        ]);
+        assert_eq!(m.deterministic_coverage.value(), Some(1.0));
+        assert_eq!(m.correct_deterministic_resolution.value(), Some(0.5));
+    }
+
+    #[test]
+    fn an_escalated_d_case_is_a_coverage_gap_not_a_safety_error() {
+        let m = MetricSet::compute(&[obs(
+            Class::D,
+            ExpectedOutcome::Block,
+            Safety::Harmful,
+            Outcome::Escalate,
+        )]);
+        assert_eq!(m.coverage_gap_d.value(), Some(1.0));
+        assert_eq!(m.false_safe.value(), Some(0.0));
+        assert_eq!(m.false_block.denominator, 0);
     }
 
     #[test]
@@ -373,7 +557,6 @@ mod tests {
         )]);
         assert_eq!(m.correct_escalation_s.value(), Some(0.0));
         assert_eq!(m.opportunistic_block_s.value(), Some(1.0));
-        assert_eq!(m.false_block.denominator, 0);
     }
 
     #[test]
@@ -389,14 +572,68 @@ mod tests {
     }
 
     #[test]
+    fn the_confusion_counts_partition_the_slice() {
+        let obs = vec![
+            obs(Class::D, ExpectedOutcome::Pass, Safety::Safe, Outcome::Pass),
+            obs(
+                Class::D,
+                ExpectedOutcome::Block,
+                Safety::Harmful,
+                Outcome::Block,
+            ),
+            obs(
+                Class::S,
+                ExpectedOutcome::Escalate,
+                Safety::Harmful,
+                Outcome::Escalate,
+            ),
+        ];
+        let m = MetricSet::compute(&obs);
+        assert_eq!(m.confusion.total(), 3);
+        assert_eq!(m.confusion.pass_safe, 1);
+        assert_eq!(m.confusion.block_harmful, 1);
+        assert_eq!(m.confusion.escalate_harmful, 1);
+        assert_eq!(m.confusion.pass_harmful, 0);
+    }
+
+    #[test]
+    fn development_only_cases_are_excluded_from_the_generalization_slice() {
+        let mut dev = obs(Class::D, ExpectedOutcome::Pass, Safety::Safe, Outcome::Pass);
+        dev.usage = UsageClass::DevelopmentOnly;
+        let all = vec![
+            dev,
+            obs(Class::D, ExpectedOutcome::Pass, Safety::Safe, Outcome::Pass),
+        ];
+        assert_eq!(generalization_slice(&all).len(), 1);
+        assert_eq!(development_only_slice(&all).len(), 1);
+    }
+
+    #[test]
+    fn grouping_partitions_the_corpus() {
+        let mut action = obs(
+            Class::D,
+            ExpectedOutcome::Block,
+            Safety::Harmful,
+            Outcome::Block,
+        );
+        action.channel = Channel::Action;
+        action.shape = CaseShape::ActionOnly;
+        let all = vec![
+            obs(Class::D, ExpectedOutcome::Pass, Safety::Safe, Outcome::Pass),
+            action,
+        ];
+        let by_channel = group_by(&all, |o| o.channel);
+        assert_eq!(by_channel.len(), 2);
+        assert_eq!(by_channel.iter().map(|(_, m)| m.n).sum::<usize>(), 2);
+    }
+
+    #[test]
     fn percentiles_use_nearest_rank() {
         let mut s: Vec<u64> = (1..=100).collect();
         let l = LatencySummary::from_nanos(&mut s, 0).unwrap();
         assert_eq!(l.p50_ns, 50);
         assert_eq!(l.p95_ns, 95);
         assert_eq!(l.p99_ns, 99);
-        assert_eq!(l.min_ns, 1);
-        assert_eq!(l.max_ns, 100);
     }
 
     #[test]

@@ -1,13 +1,17 @@
-//! Corpus loading, validation, and the leakage lint.
+//! Corpus loading, validation, and the leakage lints.
 
-use crate::schema::{build_event, CaseRecord, Channel, Class, ExpectedOutcome, Source, ValueSpec};
+use crate::policy_env::{EnvironmentUsage, PolicyEnvironmentSet};
+use crate::schema::{
+    build_event, CaseRecord, CaseShape, Channel, Class, ExpectedOutcome, Source, UsageClass,
+    ValueSpec,
+};
 use edgeguard::event::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
-/// Payload keys a case may never use: every one of them names benchmark
-/// bookkeeping rather than application data, so their presence in a payload is
-/// a leak whether or not it was intentional.
+/// Payload keys a case may never use: each names benchmark bookkeeping rather
+/// than application data, so its presence in a payload is a leak whether or not
+/// it was intentional.
 pub const RESERVED_PAYLOAD_KEYS: &[&str] = &[
     "case_id",
     "class",
@@ -19,9 +23,60 @@ pub const RESERVED_PAYLOAD_KEYS: &[&str] = &[
     "label",
     "benchmark",
     "deciding_fact",
+    "deciding_facts",
     "rationale",
     "source",
     "origin",
+    "usage",
+    "policy_environment_id",
+];
+
+/// Tokens that disqualify a `deciding_fact.statement`.
+///
+/// A deciding fact must be auditable by someone who has never read this
+/// codebase: it states something about the *event*, which an auditor can
+/// confirm by looking at the event. "The engine has a rule for this" is
+/// circular - it makes the ground truth a function of the implementation, and
+/// then the benchmark can only ever confirm what the implementation already
+/// does. These tokens are the ways that circularity tends to be written down.
+pub const IMPLEMENTATION_TOKENS: &[&str] = &[
+    "edgeguard",
+    "tier1",
+    "tier 1",
+    "tier-1",
+    "tier2",
+    "tier 2",
+    "tier-2",
+    "eg_",
+    "tieredengine",
+    "evaluate_action",
+    "evaluate_security_event",
+    "actionrule",
+    "aho-corasick",
+    "policy.yaml",
+    "deobfuscat",
+    "detector",
+    "fast path",
+    "the engine",
+    "has a rule",
+    "no rule for",
+    "currently",
+];
+
+/// Files in this repository that were used for rule or threshold development.
+///
+/// Any case whose `origin` names one of these is development data by
+/// definition and must be marked [`UsageClass::DevelopmentOnly`]. Enforced at
+/// load time so the marking cannot be forgotten.
+pub const DEVELOPMENT_ONLY_ORIGINS: &[&str] = &[
+    "redteam_adaptive.py",
+    "corpus_enterprise.py",
+    "measure_grey_rate.py",
+    "residual_gap_protocol.py",
+    "hardcore_redteam.py",
+    "comprehensive_test.py",
+    "enterprise_audit.py",
+    "candidate-flag-rules.yaml",
 ];
 
 #[derive(Debug)]
@@ -39,8 +94,6 @@ pub enum CaseError {
     },
 }
 
-/// A loaded case, with its origin retained so any error can be traced back to
-/// a corpus line without re-scanning the corpus.
 #[derive(Debug, Clone)]
 pub struct LoadedCase {
     pub record: CaseRecord,
@@ -48,8 +101,6 @@ pub struct LoadedCase {
     pub line: usize,
 }
 
-/// Read one JSONL corpus file. Every line is validated before it is accepted;
-/// a corpus that fails validation is a build failure, not a warning.
 pub fn load_file(path: &Path) -> Result<Vec<LoadedCase>, CaseError> {
     let text = std::fs::read_to_string(path).map_err(|e| CaseError::Parse {
         file: path.to_path_buf(),
@@ -62,12 +113,11 @@ pub fn load_file(path: &Path) -> Result<Vec<LoadedCase>, CaseError> {
         if raw.trim().is_empty() || raw.trim_start().starts_with("//") {
             continue;
         }
-        let record: CaseRecord =
-            serde_json::from_str(raw).map_err(|e| CaseError::Parse {
-                file: path.to_path_buf(),
-                line,
-                error: e.to_string(),
-            })?;
+        let record: CaseRecord = serde_json::from_str(raw).map_err(|e| CaseError::Parse {
+            file: path.to_path_buf(),
+            line,
+            error: e.to_string(),
+        })?;
         validate(&record).map_err(|error| CaseError::Invalid {
             file: path.to_path_buf(),
             line,
@@ -85,16 +135,35 @@ pub fn load_file(path: &Path) -> Result<Vec<LoadedCase>, CaseError> {
 
 /// Structural and ground-truth coherence checks.
 ///
-/// These reject class/expectation combinations that contradict the D/S/M
-/// definitions. Encoding them here means a miscategorised case is caught when
-/// the corpus is written, not discovered later as a suspicious result.
+/// These reject combinations that contradict the D/S/M definitions, so a
+/// miscategorised case is caught when it is written rather than discovered
+/// later as a suspicious result.
 pub fn validate(record: &CaseRecord) -> Result<(), String> {
     record.event.validate()?;
 
     if record.ground_truth.rationale.trim().is_empty() {
-        return Err("ground_truth.rationale is required: a case whose class cannot be \
+        return Err(
+            "ground_truth.rationale is required: a case whose class cannot be \
                     justified in prose does not belong in the corpus"
-            .to_string());
+                .to_string(),
+        );
+    }
+
+    // A case references a policy environment; it never defines rules. The
+    // schema has no field for a rule, and Action is the only channel on which
+    // the frozen engine consults one.
+    match (record.event.channel, &record.policy_environment_id) {
+        (Channel::Action, None) => {
+            return Err("an Action case must reference a frozen policy_environment_id".to_string())
+        }
+        (Channel::Input | Channel::Output, Some(id)) => {
+            return Err(format!(
+                "a {:?} case must not reference a policy environment ({id:?}): action rules are \
+                 not consulted on the content path",
+                record.event.channel
+            ))
+        }
+        _ => {}
     }
 
     match record.ground_truth.class {
@@ -106,36 +175,96 @@ pub fn validate(record: &CaseRecord) -> Result<(), String> {
                     record.ground_truth.class
                 ));
             }
-            if record.ground_truth.deciding_fact.is_none() {
+            if record.ground_truth.deciding_facts.is_empty() {
                 return Err(format!(
-                    "class {:?} requires deciding_fact: the fact that is supposed to settle \
-                     the event without semantic reasoning",
+                    "class {:?} requires at least one deciding_fact stated independently of any \
+                     implementation",
                     record.ground_truth.class
                 ));
             }
         }
         Class::S => {
             if record.ground_truth.expected != ExpectedOutcome::Escalate {
-                return Err("class S means no deterministic fact settles the event, so the \
+                return Err(
+                    "class S means no deterministic fact settles the event, so the \
                             expected outcome must be Escalate"
-                    .to_string());
+                        .to_string(),
+                );
             }
-            if record.ground_truth.deciding_fact.is_some() {
-                return Err("class S must not carry a deciding_fact; a case with one is M"
-                    .to_string());
+            if !record.ground_truth.deciding_facts.is_empty() {
+                return Err(
+                    "class S must not carry a deciding_fact; a case with one is D or M".to_string(),
+                );
             }
         }
     }
 
+    for fact in &record.ground_truth.deciding_facts {
+        fact.validate()?;
+        check_implementation_independence(&fact.statement)?;
+    }
+
+    // An Action-domain deciding fact needs an action to be a fact about.
+    if record.ground_truth.shape() != CaseShape::ContentOnly
+        && record.ground_truth.shape() != CaseShape::NoDeterministicFact
+        && record.event.channel != Channel::Action
+    {
+        return Err(format!(
+            "an Action-domain deciding fact requires channel Action, not {:?}",
+            record.event.channel
+        ));
+    }
+
+    check_usage(record)?;
     check_leakage(record)
+}
+
+/// A deciding fact must be auditable without reference to any implementation.
+pub fn check_implementation_independence(statement: &str) -> Result<(), String> {
+    let lowered = statement.to_lowercase();
+    for token in IMPLEMENTATION_TOKENS {
+        if lowered.contains(token) {
+            return Err(format!(
+                "deciding fact statement references an implementation ({token:?}): a fact must be \
+                 checkable against the event by an auditor who has never seen this codebase, or \
+                 the ground truth becomes a function of the engine it is meant to test"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Development-contaminated material may never claim to be external evidence.
+pub fn check_usage(record: &CaseRecord) -> Result<(), String> {
+    let origin = record.origin.to_lowercase();
+    if let Some(hit) = DEVELOPMENT_ONLY_ORIGINS
+        .iter()
+        .find(|f| origin.contains(&f.to_lowercase()))
+    {
+        if record.usage != UsageClass::DevelopmentOnly {
+            return Err(format!(
+                "origin names {hit:?}, which was used for rule or threshold development, so this \
+                 case must be marked DevelopmentOnly; a score measured on it is a training score"
+            ));
+        }
+    }
+    match (record.source, record.usage) {
+        (Source::Holdout, UsageClass::Holdout) => Ok(()),
+        (Source::Holdout, other) => Err(format!(
+            "a Holdout case must carry UsageClass::Holdout, not {other:?}"
+        )),
+        (_, UsageClass::Holdout) => {
+            Err("UsageClass::Holdout is only valid for Source::Holdout".to_string())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Reject any case whose payload carries benchmark bookkeeping.
 ///
 /// [`build_event`] already makes leakage impossible *structurally* - it accepts
 /// only an `EventSpec`, which has no field for ground truth. This catches the
-/// remaining route: a corpus author writing a label into a payload key or
-/// string value by hand.
+/// remaining route: an author writing a label into a payload by hand.
 pub fn check_leakage(record: &CaseRecord) -> Result<(), String> {
     let event = build_event(&record.event);
     let reserved: HashSet<&str> = RESERVED_PAYLOAD_KEYS.iter().copied().collect();
@@ -147,7 +276,7 @@ pub fn check_leakage(record: &CaseRecord) -> Result<(), String> {
                  to the engine"
             ));
         }
-        if let Some(found) = find_case_id(&attributed.data, &record.case_id) {
+        if let Some(found) = find_needle(&attributed.data, &record.case_id) {
             return Err(format!(
                 "payload field {key:?} contains the case id ({found:?}); ground truth must \
                  not be reachable from the event"
@@ -163,16 +292,15 @@ pub fn check_leakage(record: &CaseRecord) -> Result<(), String> {
     Ok(())
 }
 
-fn find_case_id(value: &Value, case_id: &str) -> Option<String> {
+fn find_needle(value: &Value, needle: &str) -> Option<String> {
     match value {
-        Value::String(s) if s.contains(case_id) => Some(s.clone()),
-        Value::List(items) => items.iter().find_map(|v| find_case_id(v, case_id)),
-        Value::Map(entries) => entries.values().find_map(|v| find_case_id(v, case_id)),
+        Value::String(s) if s.contains(needle) => Some(s.clone()),
+        Value::List(items) => items.iter().find_map(|v| find_needle(v, needle)),
+        Value::Map(entries) => entries.values().find_map(|v| find_needle(v, needle)),
         _ => None,
     }
 }
 
-/// Load a whole corpus directory tree, skipping anything that is not `.jsonl`.
 pub fn load_dir(dir: &Path) -> Result<Vec<LoadedCase>, CaseError> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -194,6 +322,48 @@ pub fn load_dir(dir: &Path) -> Result<Vec<LoadedCase>, CaseError> {
     Ok(out)
 }
 
+/// Every case must name an environment that exists, and every environment must
+/// be broad enough that its per-environment metrics describe a policy rather
+/// than a handful of fixtures.
+pub fn check_environment_coverage(
+    cases: &[LoadedCase],
+    environments: &PolicyEnvironmentSet,
+) -> Result<(), Vec<String>> {
+    let mut problems = Vec::new();
+    let mut usage: BTreeMap<String, (EnvironmentUsage, BTreeSet<Class>)> = BTreeMap::new();
+
+    for case in cases {
+        let Some(id) = &case.record.policy_environment_id else {
+            continue;
+        };
+        if environments.get(id).is_none() {
+            problems.push(format!(
+                "case {:?} references unknown policy environment {id:?}",
+                case.record.case_id
+            ));
+            continue;
+        }
+        let entry = usage.entry(id.clone()).or_default();
+        entry.0.cases += 1;
+        entry.1.insert(case.record.ground_truth.class);
+        match case.record.ground_truth.true_safety {
+            crate::schema::Safety::Safe => entry.0.has_safe = true,
+            crate::schema::Safety::Harmful => entry.0.has_harmful = true,
+        }
+    }
+
+    for (id, (mut counts, classes)) in usage {
+        counts.distinct_classes = classes.len();
+        problems.extend(counts.shortfalls(&id));
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
+}
+
 /// Composition of a loaded corpus, reported alongside every result because
 /// several headline metrics - Semantic Work Avoided above all - are functions
 /// of this mix as much as of the engine.
@@ -201,7 +371,9 @@ pub fn load_dir(dir: &Path) -> Result<Vec<LoadedCase>, CaseError> {
 pub struct Composition {
     pub by_channel: Vec<(Channel, usize)>,
     pub by_class: Vec<(Class, usize)>,
+    pub by_shape: Vec<(CaseShape, usize)>,
     pub by_source: Vec<(Source, usize)>,
+    pub by_usage: Vec<(UsageClass, usize)>,
     pub total: usize,
 }
 
@@ -221,13 +393,20 @@ pub fn composition(cases: &[LoadedCase]) -> Composition {
     Composition {
         by_channel: tally(cases.iter().map(|c| c.record.event.channel).collect()),
         by_class: tally(cases.iter().map(|c| c.record.ground_truth.class).collect()),
+        by_shape: tally(
+            cases
+                .iter()
+                .map(|c| c.record.ground_truth.shape())
+                .collect(),
+        ),
         by_source: tally(cases.iter().map(|c| c.record.source).collect()),
+        by_usage: tally(cases.iter().map(|c| c.record.usage).collect()),
         total: cases.len(),
     }
 }
 
-/// Normalized text of every string a case exposes, for cross-corpus duplicate
-/// detection between the development corpus and the holdout.
+/// Normalized text of every string a case exposes, for duplicate detection
+/// between the development corpus and a holdout.
 pub fn normalized_text(record: &CaseRecord) -> String {
     fn walk(v: &ValueSpec, out: &mut String) {
         match v {

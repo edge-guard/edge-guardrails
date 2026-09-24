@@ -11,7 +11,7 @@
 //! plausible-looking stand-in is worse than an empty cell because a reader
 //! cannot tell it apart from a measurement.
 
-use crate::schema::ActionRuleSpec;
+use crate::policy_env::ActionRuleSpec;
 use edgeguard::event::{ActionRule, EventDecision, SecurityEvent};
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,9 @@ pub enum Availability {
     Available,
     /// Carries the reason verbatim into the report, so an empty cell always
     /// says why it is empty.
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
 }
 
 /// What one routed event cost, in units the cascade comparison needs.
