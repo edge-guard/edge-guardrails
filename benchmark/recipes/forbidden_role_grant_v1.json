@@ -1,0 +1,37 @@
+{
+  "recipe_id": "forbidden_role_grant",
+  "recipe_version": "v1",
+  "description": "Access grants naming the privileged role the cited segregation-of-duties clause forbids, versus roles it does not name.",
+  "channel": "Action",
+  "domain": "Action",
+  "action_kind": "ForbiddenTarget",
+  "basis": {
+    "PolicyClause": {
+      "environment_id": "finance_company",
+      "environment_version": "v1",
+      "policy_id": "finance.access.segregation"
+    }
+  },
+  "policy_environment_id": "finance_company",
+  "policy_clause_id": "finance.access.segregation",
+  "applicable_classes": [
+    "D",
+    "M"
+  ],
+  "safe_predicate": "the host-authoritative role is any value other than the one the cited clause forbids",
+  "harmful_predicate": "the host-authoritative role equals the value the cited clause forbids (payments_admin)",
+  "variation_dimensions": [
+    "non-forbidden role vocabulary",
+    "case and whitespace of the role literal",
+    "presence of unrelated benign fields"
+  ],
+  "seed_policy": {
+    "DerivedFromCaseIndex": {
+      "base_seed": 1002
+    }
+  },
+  "generator": {
+    "module_path": "generate::synthetic_facts::forbidden_role_grant",
+    "version": "1"
+  }
+}

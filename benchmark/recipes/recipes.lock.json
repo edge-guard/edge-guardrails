@@ -1,0 +1,10 @@
+{
+  "entries": {
+    "credential_format_conformance@v1": "03bf9436124841f132f96a4b0a096173b1aa0dd91b26aa70e37ccb4a52a2e38e",
+    "forbidden_role_grant@v1": "f3d71314a1906d3e36ff730f639168070f410db97fe681e438ab85ce61c49f9e",
+    "numeric_authority_boundary@v1": "b1ef5c116ba1ddd8e17af8d12969d4581d2bef8596fe106281471d9c0168ecea",
+    "provenance_mismatch@v1": "170d52d06d43f3918d2a8a8885c2c3359a5a9af26eb31141cd04c85e6f137024",
+    "required_fact_missing@v1": "20f2ddcfc177d1d0b27636136f734f71183e213d264e2df538548758cd2544a7",
+    "typed_argument_mismatch@v1": "fa4c1aaaaf56c6eaa8d9301a4973e78d3c9b820e9d8503bd827ef6b6a7309377"
+  }
+}

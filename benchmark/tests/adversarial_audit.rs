@@ -1443,10 +1443,30 @@ fn fix_b_attestation_fails_on_recipe_drift() {
 }
 
 #[test]
-fn fix_b_no_recipes_exist_yet() {
+fn fix_b_the_shipped_recipes_are_frozen_and_no_cases_exist() {
+    // Phase 1 drafted and froze six recipes. It did NOT instantiate cases:
+    // the freeze has to precede instantiation, or it guarantees nothing.
     let recipes = recipe::load_dir(&recipe_dir()).unwrap();
+    assert_eq!(recipes.len(), 6);
+
+    let corpus_dir = manifest().join("corpus");
+    let mut case_files = Vec::new();
+    let mut stack = vec![corpus_dir];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "jsonl") {
+                case_files.push(p);
+            }
+        }
+    }
     assert!(
-        recipes.is_empty(),
-        "this pass defines the freeze mechanism; it does not author recipes"
+        case_files.is_empty(),
+        "no corpus cases may exist at the end of Phase 1: {case_files:?}"
     );
 }

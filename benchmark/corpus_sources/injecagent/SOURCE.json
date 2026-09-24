@@ -1,0 +1,108 @@
+{
+  "source_id": "injecagent",
+  "source_version": "upstream-main@f19c9f2",
+  "source_type": "indirect_prompt_injection_benchmark",
+  "official_source": "https://github.com/uiuc-kang-lab/InjecAgent",
+  "upstream_commit_or_revision": "f19c9f2c79a41046eb13c03c51a24c567a8ffa07",
+  "license": "MIT",
+  "license_verified": true,
+  "license_reference": "https://github.com/uiuc-kang-lab/InjecAgent/blob/main/LICENCE (GitHub licenses API spdx_id=MIT); copy preserved at corpus_sources/injecagent/LICENCE",
+  "acquired_at": "2026-09-24T16:43:24Z",
+  "acquired_by": "Phase 1 acquisition, git clone --depth 1 then commit pinned",
+  "raw_artifacts": [
+    {
+      "path": "injecagent/LICENCE",
+      "bytes": 1066,
+      "sha256": "b48589499dbb84caa796b00b4ea652b0443e49660282c44d890fd473b8c0674e"
+    },
+    {
+      "path": "injecagent/raw/attacker_cases_dh.jsonl",
+      "bytes": 10937,
+      "sha256": "999d52e15af3c80a3303a09430af0f3878d1f91e4c573ca7b477a91cdfa6b991"
+    },
+    {
+      "path": "injecagent/raw/attacker_cases_ds.jsonl",
+      "bytes": 13209,
+      "sha256": "87952398c989d8ca841724e38ecdbb789676d3841e19dfc44aac7b710df9cb1f"
+    },
+    {
+      "path": "injecagent/raw/attacker_simulated_responses.json",
+      "bytes": 1359580,
+      "sha256": "b1da2e1fb75f266c069b832fef6738c295f01d8962fae15bdac9ff6625e5594e"
+    },
+    {
+      "path": "injecagent/raw/test_cases_dh_base.json",
+      "bytes": 672918,
+      "sha256": "0a8186468d21389af432e8c7b399ae42264d1b93a07b65c7a489468508604305"
+    },
+    {
+      "path": "injecagent/raw/test_cases_dh_enhanced.json",
+      "bytes": 721878,
+      "sha256": "885602716b72c18af80695ce6c2e1f242fa03163bc90b0788b0c5e4ab6216d50"
+    },
+    {
+      "path": "injecagent/raw/test_cases_ds_base.json",
+      "bytes": 765370,
+      "sha256": "4daab35c62a3845e8b9400f4dca58b9c9f37e57cd33b2337552557fbb26282e9"
+    },
+    {
+      "path": "injecagent/raw/test_cases_ds_enhanced.json",
+      "bytes": 817594,
+      "sha256": "7bc510868df032511053fc40e8470e68a041fb7148d055112093594bf73ab0ce"
+    },
+    {
+      "path": "injecagent/raw/tools.json",
+      "bytes": 541498,
+      "sha256": "e21a8f70b1d5de4677d6d52642936a322655d79b17a72c84f600550384083a1e"
+    },
+    {
+      "path": "injecagent/raw/user_cases.jsonl",
+      "bytes": 10924,
+      "sha256": "c840e2b00fdce68e7142d0970220522303d67b2530d6fb36ef1112448cdd8977"
+    }
+  ],
+  "original_record_count": 2108,
+  "original_splits": {
+    "test_cases_dh_base": 510,
+    "test_cases_ds_base": 544,
+    "test_cases_dh_enhanced": 510,
+    "test_cases_ds_enhanced": 544,
+    "_note": "base = 510+544 = 1054, matching the 1,054 figure in the paper. enhanced is the same 1,054 with an added hacking prompt."
+  },
+  "supporting_artifacts": {
+    "attacker_cases_dh": 30,
+    "attacker_cases_ds": 32,
+    "user_cases": 17,
+    "tools": 38,
+    "attacker_simulated_responses": 2347
+  },
+  "eligible_record_count": 2108,
+  "excluded_record_count": 0,
+  "exclusion_reasons": [
+    "None. Eligibility criterion declared before inspection: the record carries a non-empty 'Tool Response' string, which is the text an agent would actually ingest and therefore the only field that maps to an INPUT event. All 2108 records satisfy it."
+  ],
+  "eligibility_criterion": "non-empty 'Tool Response' field",
+  "intended_usage": "EXTERNAL_EVALUATION",
+  "allowed_channels": [
+    "INPUT"
+  ],
+  "likely_dominant_class": "S (NOT a per-record assignment; see notes)",
+  "original_labels": {
+    "Attack Type": [
+      "Physical Harm",
+      "Financial Harm",
+      "Data Security Harm",
+      "Financial Data",
+      "Physical Data",
+      "Others"
+    ],
+    "_meaning": "attacker intent category, assigned upstream; NOT a per-event security verdict",
+    "_no_benign_records": "every record is an attack; the corpus carries no benign counterpart"
+  },
+  "notes": [
+    "Label provenance: the upstream label describes the ATTACKER'S INTENT, not whether an agent was manipulated. Attack success is a per-model result the repository does not ship, so no EdgeGuard-independent 'was this actually harmful to the agent' label exists.",
+    "Mapping to ACTION was considered and rejected: the tool call an agent might emit is not in the data, and inventing host-authoritative arguments would make the ground truth ours.",
+    "The dataset contains NO benign records. False-BLOCK cannot be measured from this source alone.",
+    "Per-record D/S/M classification is deferred. A record whose injected text happens to carry an independently justified deterministic fact is not S merely because of dataset origin."
+  ]
+}

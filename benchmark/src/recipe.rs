@@ -278,6 +278,11 @@ pub fn load_dir(dir: &Path) -> Result<RecipeSet, RecipeError> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        // The lock lives beside the recipes it freezes, and is not one of them.
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with(".lock.json"))
+        })
         .collect();
     paths.sort();
 

@@ -1,0 +1,210 @@
+{
+  "source_id": "agentdojo",
+  "source_version": "upstream-main@089ed46",
+  "source_type": "agent_prompt_injection_benchmark",
+  "official_source": "https://github.com/ethz-spylab/agentdojo",
+  "upstream_commit_or_revision": "089ed468cf3ed0322acc66b0211f26d9d90dbf60",
+  "license": "MIT",
+  "license_verified": true,
+  "license_reference": "https://github.com/ethz-spylab/agentdojo/blob/main/LICENSE (GitHub licenses API spdx_id=MIT); copy preserved at corpus_sources/agentdojo/LICENSE",
+  "acquired_at": "2026-09-24T16:43:24Z",
+  "acquired_by": "Phase 1 acquisition, git clone --depth 1 then commit pinned",
+  "raw_artifacts": [
+    {
+      "path": "agentdojo/LICENSE",
+      "bytes": 1161,
+      "sha256": "4285a071f2d382338e52b4fb0a186d952984a34d43a33d8872e1a1d8cb43401e"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/attacks/__init__.py",
+      "bytes": 493,
+      "sha256": "e5f2a950166c3ef6974ce8f8fcb7ab7dd33a6cd3496205b10c7bd907aa4287b6"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/attacks/attack_registry.py",
+      "bytes": 1326,
+      "sha256": "cdbfefa137485531fa3ff33f3235b769d5116b4a1a4544b0fe48bffe212aafe5"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/attacks/base_attacks.py",
+      "bytes": 6329,
+      "sha256": "d962c68a8a6cd41c33eac0a2fd27fe38d77dfb3e2f85425b2c2fda63c920b62b"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/attacks/baseline_attacks.py",
+      "bytes": 2864,
+      "sha256": "0e3f3cec2173524989d67bd3d934d032774ad3fc5995969c9565613efaa21c6d"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/attacks/dos_attacks.py",
+      "bytes": 4540,
+      "sha256": "160aa9604ce31cd3e54ecb06d9ed4acc770066a0dedd11d0742f6205d6077859"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/attacks/important_instructions_attacks.py",
+      "bytes": 6222,
+      "sha256": "519f24e0b9d72f43343d665679adacc33758b50cd1b586a81fa53fb098dcfe71"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/banking/environment.yaml",
+      "bytes": 2267,
+      "sha256": "3f539da1d97779b244cd122afc683dc69d602f338e1b3c42d126cbde33611c8b"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/banking/injection_vectors.yaml",
+      "bytes": 657,
+      "sha256": "4eb98a601c108d9b4d88f5d3f2dbf455f775a718975a0ae2624b4cf0d0f6f819"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/slack/environment.yaml",
+      "bytes": 3867,
+      "sha256": "0ea2f9b83e5ffaae0bf50fab2b13d6c8ee59a952f791b16c9554fdc48935c87d"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/slack/injection_vectors.yaml",
+      "bytes": 554,
+      "sha256": "efc01621ffa7955ee10e00e916ac933a41bd8347ba285e1e4888813bf5e0d3a2"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/travel/environment.yaml",
+      "bytes": 20964,
+      "sha256": "ca8ef591bde5a8d8b9e2efe6830b8e4646c43f633c86f14cb878f588bb4b8a3c"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/travel/injection_vectors.yaml",
+      "bytes": 1529,
+      "sha256": "a6ab848b39d862439e7b4844a617e578294de93cd0176c1851184dd901edb51c"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/workspace/environment.yaml",
+      "bytes": 123,
+      "sha256": "08a22c4eac0f72012e23c135cf3157b6fa7b35881b57bd2e910a5b059c02d157"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/workspace/gpt_prompts.txt",
+      "bytes": 5751,
+      "sha256": "2fa475cc5a4e2df6cb7cd944cc1291aaa69191d4e388fd88c36521c877b13cda"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/workspace/include/calendar.yaml",
+      "bytes": 9610,
+      "sha256": "69b0ae96804e986b5a0dba694ad6ca34cf01c8c6b57bb8ceb618d9ed8640b803"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/workspace/include/cloud_drive.yaml",
+      "bytes": 28245,
+      "sha256": "a9731cd49fe7eb726e43c1727c40eff0d6ca2d85d53728aa744860a8c4214130"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/workspace/include/inbox.yaml",
+      "bytes": 13942,
+      "sha256": "e6fac364bfb0e89d3d0251ef8079ffa2791504673a426029034356b8228f2082"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/suites/workspace/injection_vectors.yaml",
+      "bytes": 2997,
+      "sha256": "3390ac3da090ea0fde5f50ef0a74bf260786b35ab6ff14d47a199ecb41a15489"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/data/system_messages.yaml",
+      "bytes": 494,
+      "sha256": "b65b4fa81ee473447ae6314b1c41e08f0d53a2e07f2a766901f1f4f1a53c51a4"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1/banking/injection_tasks.py",
+      "bytes": 15309,
+      "sha256": "fa2dedf8e66c95ffadb54f5a26648728b08c56f302858de4ee9a5cc0b3891618"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1/slack/injection_tasks.py",
+      "bytes": 9144,
+      "sha256": "d5775da1689e13192b665837e72cee88ed76f622e9b998e9def18b700fdc5afc"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1/travel/injection_tasks.py",
+      "bytes": 12604,
+      "sha256": "9252be834b0ae0e28fe06744e052987d71d8ad3666b8d0b1f65f2875f998fca8"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1/workspace/injection_tasks.py",
+      "bytes": 10615,
+      "sha256": "03e0894ffb544a79fd0bfd2c62cc5f90b19a2b1d429068d800239bfd020b6dcc"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1_1_1/travel/injection_tasks.py",
+      "bytes": 2995,
+      "sha256": "23f325aa0821c7982991657588ee0b58057423559e97d6ebd6febc8274b5ac1b"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1_1_2/travel/injection_tasks.py",
+      "bytes": 5267,
+      "sha256": "d8688a8896736e4807b649340b84af65eb7b36f34d082073690333445a410b39"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1_1_2/workspace/injection_tasks.py",
+      "bytes": 8339,
+      "sha256": "3ffccf1e54362377a3d02955010b041a572c64aa209bb3e8b70c1fe5fc76fdad"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1_2/banking/injection_tasks.py",
+      "bytes": 15207,
+      "sha256": "3e678ad165f911dbc16c8307de761dcc15da274716bec7ac0d05db167ec2c311"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1_2/travel/injection_tasks.py",
+      "bytes": 2048,
+      "sha256": "15b8ccee487223bfc6afc58cf05591e3a96fb668eee39d7d47ac2fd98f5173c0"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1_2/workspace/injection_tasks.py",
+      "bytes": 17855,
+      "sha256": "d11a9a4aa86085a1b0e8cea20652dd20f903adedfc6065175a0ead858c29e4a3"
+    },
+    {
+      "path": "agentdojo/raw/src/agentdojo/default_suites/v1_2_1/workspace/injection_tasks.py",
+      "bytes": 4361,
+      "sha256": "5a30d439850b58cfb834840bdfe7bbdf4405859bb1899e59ef476f29156078e8"
+    }
+  ],
+  "original_record_count": null,
+  "original_record_count_explanation": "NOT A RECORD-BASED DATASET. There is no file of injected texts to count. Raw artifacts are: 54 GOAL strings across 11 injection_tasks.py files, 39 injection vectors across 4 injection_vectors.yaml files, benign environment YAML, and the attack templates.",
+  "original_splits": {
+    "suites": [
+      "banking",
+      "slack",
+      "travel",
+      "workspace"
+    ],
+    "_versions": [
+      "v1",
+      "v1_1",
+      "v1_1_1",
+      "v1_1_2",
+      "v1_2",
+      "v1_2_1",
+      "v1_2_2"
+    ]
+  },
+  "eligible_record_count": 0,
+  "excluded_record_count": 0,
+  "exclusion_reasons": [
+    "No records excluded, because no records exist to exclude. The text an INPUT event would carry is SYNTHESISED AT RUNTIME by an attack class: important_instructions_attacks.py builds it as jailbreak.format(goal=injection_task.GOAL, user=..., model=...). Deriving INPUT text is therefore a Phase-2 derivation, not an acquisition.",
+    "The default 'important_instructions' attack embeds the TARGET MODEL'S NAME in the injected string, so the text differs per model under evaluation. Any derivation must pin a model-independent variant (the repository ships important_instructions_no_model_name / _no_user_name for this) and record the choice."
+  ],
+  "eligibility_criterion": "deferred to Phase 2; requires pinning an attack class and its parameters",
+  "intended_usage": "EXTERNAL_EVALUATION",
+  "allowed_channels": [
+    "INPUT"
+  ],
+  "likely_dominant_class": "S (NOT a per-record assignment)",
+  "original_labels": {
+    "GOAL": "attacker objective, prose",
+    "security()": "environment-state predicate evaluated after an agent run; requires executing an agent, which Phase 1 does not do",
+    "_meaning": "'attack succeeded' is a property of the agent under test, not of the event"
+  },
+  "notes": [
+    "ACTION mapping rejected per the pre-recorded decision and the Phase-0 research: InjectionTask.ground_truth() carries placeholder_args that are only resolved at runtime, so the forbidden action's arguments do not exist statically.",
+    "injection_vectors.yaml holds BENIGN default text; the attack string replaces it at runtime.",
+    "Per-record D/S/M classification is deferred."
+  ]
+}

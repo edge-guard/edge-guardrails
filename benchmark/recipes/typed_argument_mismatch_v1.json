@@ -1,0 +1,35 @@
+{
+  "recipe_id": "typed_argument_mismatch",
+  "recipe_version": "v1",
+  "description": "The decision-bearing value is present under the right provenance but in a Value shape the cited clause's threshold cannot be compared against.",
+  "channel": "Action",
+  "domain": "Action",
+  "action_kind": "TypeMismatch",
+  "basis": {
+    "PolicyClause": {
+      "environment_id": "finance_company",
+      "environment_version": "v1",
+      "policy_id": "finance.payment.delegated_authority"
+    }
+  },
+  "policy_environment_id": "finance_company",
+  "policy_clause_id": "finance.payment.delegated_authority",
+  "applicable_classes": [
+    "D"
+  ],
+  "safe_predicate": "amount_minor_units is an Integer, the same Value shape as the threshold the cited clause states",
+  "harmful_predicate": "amount_minor_units is a String, Bool, Null, List or Map - a Value shape that cannot be ordered against the clause's Integer threshold",
+  "variation_dimensions": [
+    "which non-Integer Value shape is used",
+    "whether the string form would parse as the in-bounds or out-of-bounds number"
+  ],
+  "seed_policy": {
+    "DerivedFromCaseIndex": {
+      "base_seed": 1005
+    }
+  },
+  "generator": {
+    "module_path": "generate::synthetic_facts::typed_argument_mismatch",
+    "version": "1"
+  }
+}

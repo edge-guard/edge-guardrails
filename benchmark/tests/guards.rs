@@ -602,10 +602,42 @@ fn the_recipe_module_does_not_reach_into_the_engine() {
 }
 
 #[test]
-fn no_synthetic_recipes_have_been_authored_yet() {
+fn the_recipe_loader_ignores_the_lock_file() {
+    // The lock lives beside the recipes it freezes; it is not a recipe and must
+    // not be parsed as one.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes");
+    assert!(dir.join("recipes.lock.json").exists());
+    let recipes = edgeguard_routing_benchmark::recipe::load_dir(&dir).expect("must load");
+    assert!(recipes.iter().all(|r| !r.recipe_id.contains("lock")));
+}
+
+#[test]
+fn the_shipped_recipes_load_and_validate() {
     let recipes = edgeguard_routing_benchmark::recipe::load_dir(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes"),
     )
-    .expect("an empty recipe directory is not an error");
-    assert_eq!(recipes.len(), 0);
+    .expect("recipes must load");
+    for r in recipes.iter() {
+        assert!(r.validate().is_ok(), "{} must validate", r.key());
+    }
+    assert_eq!(recipes.len(), 6, "six recipes were drafted in Phase 1");
+}
+
+#[test]
+fn the_recipe_lock_matches_the_frozen_recipes() {
+    // The freeze is only real if it is checked. Any edit to a recipe, any
+    // removal, and any addition must fail here - which is the point: after the
+    // lock is written, recipes may not move in response to a benchmark result.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes");
+    let recipes = edgeguard_routing_benchmark::recipe::load_dir(&dir).expect("recipes must load");
+    let lock: edgeguard_routing_benchmark::recipe::RecipeLock = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("recipes.lock.json")).expect("lock must exist"),
+    )
+    .expect("lock must parse");
+
+    let drift = lock.verify(&recipes.digests());
+    assert!(
+        drift.is_empty(),
+        "recipe drift against the frozen lock: {drift:#?}"
+    );
 }

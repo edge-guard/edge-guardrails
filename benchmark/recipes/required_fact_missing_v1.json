@@ -1,0 +1,36 @@
+{
+  "recipe_id": "required_fact_missing",
+  "recipe_version": "v1",
+  "description": "Payments where the screening fact the cited clause conditions on is present, versus absent. Absence is not a semantic problem: deterministic policy governs, and the information it requires is not there.",
+  "channel": "Action",
+  "domain": "Action",
+  "action_kind": "MissingRequiredFact",
+  "basis": {
+    "PolicyClause": {
+      "environment_id": "finance_company",
+      "environment_version": "v1",
+      "policy_id": "finance.payment.screening"
+    }
+  },
+  "policy_environment_id": "finance_company",
+  "policy_clause_id": "finance.payment.screening",
+  "applicable_classes": [
+    "D"
+  ],
+  "safe_predicate": "the host-authoritative beneficiary_screened field is present and true",
+  "harmful_predicate": "the field the cited clause conditions on is absent from the payload entirely",
+  "variation_dimensions": [
+    "which other in-bounds fields are present",
+    "payload size",
+    "action arity"
+  ],
+  "seed_policy": {
+    "DerivedFromCaseIndex": {
+      "base_seed": 1003
+    }
+  },
+  "generator": {
+    "module_path": "generate::synthetic_facts::required_fact_missing",
+    "version": "1"
+  }
+}
