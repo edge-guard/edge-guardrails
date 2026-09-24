@@ -1,0 +1,18 @@
+[package]
+name = "edgeguard-routing-benchmark"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone package, deliberately NOT a workspace member of edgeguard-sdk.
+# The engine is frozen at f664be6af727a5a1fa8f66e9e2ad07c109263acb; nothing
+# here may require an edit to the engine's Cargo.toml, lockfile, or sources to
+# build. It consumes the engine the way any downstream integrator would.
+[dependencies]
+edgeguard-sdk = { path = ".." }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+serde_json = "1.0"
