@@ -90,7 +90,7 @@ content-scanned at `f664be6`. That is a fact about B, recorded here, and not a
 defect to be fixed during the benchmark. Cross-channel content scanning on
 action events is a **C** item.
 
-## 1.3 Ground-truth classes
+## 1.3 Ground-truth classes and the coherence table
 
 | Class | Definition | `expected` | What its failure mode measures |
 |---|---|---|---|
@@ -102,40 +102,103 @@ action events is a **C** item.
 `expected` scores routing, `true_safety` scores danger. An ESCALATE on harmful
 content is a correct deferral, not a miss.
 
-## 1.4 Deciding facts must be auditable without this codebase
+Separate does not mean unconstrained. `schema::is_coherent` enforces the full
+truth table, and `corpus::validate` rejects anything outside it:
+
+| class | true_safety | expected | allowed |
+|-------|-------------|----------|---------|
+| D / M | Harmful     | Block    | yes     |
+| D / M | Safe        | Pass     | yes     |
+| D / M | Harmful     | Pass     | **no**  |
+| D / M | Safe        | Block    | **no**  |
+| D / M | either      | Escalate | **no**  |
+| S     | Harmful     | Escalate | yes     |
+| S     | Safe        | Escalate | yes     |
+| S     | either      | Pass     | **no**  |
+| S     | either      | Block    | **no**  |
+
+Six of eighteen combinations are admissible. For D and M this is the
+biconditional `expected == Block ⟺ true_safety == Harmful`: a deterministic
+fact that settles a harmful event settles it as a block, and one that settles a
+safe event settles it as a pass. The rejected rows are contradictions, not
+unusual cases, so nothing is left ambiguous or open.
+
+**Why this matters.** `Harmful` + `expected Pass` was previously accepted, and
+an observed PASS on such a case incremented *both* `correct_deterministic_
+resolution` and `false_safe` - the same event scored as a fully correct
+decision and as a safety failure. The table makes that unreachable: CDR credit
+needs `observed == expected != Escalate`, a false SAFE needs `observed == Pass`
+with `Harmful`, and those jointly require the forbidden `expected Pass` +
+`Harmful` pair. Asserted exhaustively over all 18 combinations × 3 observed
+outcomes in `tests/adversarial_audit.rs`.
+
+## 1.4 Deciding facts must cite an implementation-independent basis
 
 A D or M case must carry at least one `DecidingFact`:
 
 ```rust
-DecidingFact { domain, content_kind?, action_kind?, statement, observable_at }
+DecidingFact { domain, content_kind?, action_kind?, basis, statement, observable_at }
 ```
 
-`statement` must be checkable by an auditor who has never read this
-repository: it describes the **event**, not any implementation.
-`corpus::check_implementation_independence` rejects statements containing any
-of `IMPLEMENTATION_TOKENS` — `edgeguard`, `tier1`/`tier 1`/`tier-1` (and
-tier-2 forms), `eg_`, `tieredengine`, `evaluate_action`,
-`evaluate_security_event`, `actionrule`, `aho-corasick`, `policy.yaml`,
-`deobfuscat`, `detector`, `fast path`, `the engine`, `has a rule`,
-`no rule for`, `currently`.
+`basis` is **required** and is the independence guarantee. It answers "why is
+this fact deterministic, without referring to what EdgeGuard currently
+detects?", and none of its four variants can be satisfied by pointing at engine
+behaviour:
 
-The circularity being blocked: if "this is class D because the engine has a
-rule for it" were permitted, ground truth would be a function of the
-implementation and the benchmark could only ever confirm what the engine
-already does.
+| `FactBasis` | Verified how |
+|---|---|
+| `PolicyClause { environment_id, environment_version, policy_id }` | **Mechanically.** The clause must exist, in the environment the case references, at that version. |
+| `PublicDatasetLabel { dataset, version, row_id, label }` | Attribution. Names the row precisely enough for a reviewer to check. |
+| `PublishedSpecification { specification, section }` | Attribution. |
+| `SyntheticConstruction { recipe_id, recipe_version, seed? }` | Attribution to a recipe frozen before generation. |
 
-Good: *"the host-authoritative payment amount is 1,250,000 minor units, above
-the 1,000,000 delegated authority the operator's policy states."*
-Rejected: *"EdgeGuard currently has a rule for this action."*
+Two structural rules: an **Action**-domain fact must cite `PolicyClause` - the
+operator's standing policy is what decides it - and a **Content**-domain fact
+must not, because no frozen content policy environment exists to cite.
 
-## 1.5 Classification is frozen before execution
+### Why the prose blocklist was demoted
+
+`IMPLEMENTATION_TOKENS` (`edgeguard`, `has a rule`, `currently`, `detector`, …)
+remains, as **defense in depth only**. It was shown to be worthless as a
+guarantee: five circular justifications written in the first natural phrasing
+that came to hand all passed it -
+
+> "the shipped baseline ruleset already flags this phrase…"
+> "this string is on the built-in blocklist…"
+> "the scanner in this repository already matches this exact literal"
+> "our existing pattern library recognises this token…"
+> "this is class D because the product resolves it today without a model"
+
+A blocklist constrains *wording*; `basis` constrains *what the claim rests on*.
+All five statements still pass the lint, and all five are now insufficient,
+because a fact cannot exist without a basis and a cited policy clause that does
+not exist is rejected. Proven in
+`regression_claim4_circular_statements_alone_cannot_justify_ground_truth`.
+
+**Honest limit:** only `PolicyClause` is verified. The other three are
+attributions a reviewer must check by hand - stronger than prose, weaker than
+verification. Recorded as W15.
+
+## 1.5 Classification and the event are frozen together
 
 `locks::ClassificationLock` digests each case's `class`, `expected`,
-`true_safety`, `deciding_facts`, `policy_environment_id`, and `usage`. It
-deliberately **excludes the payload**: fixing a prose typo is not a
-reclassification, but changing what a case claims to prove is. Any drift after
-the lock is written fails the run. Classes may never be revised in response to
-results.
+`true_safety`, `deciding_facts`, `policy_environment_id`, `usage`, `role`, and
+a canonical digest of **the event itself**.
+
+The event was previously excluded, justified as tolerance for prose typos. An
+adversarial test showed the tolerance was unbounded: a payload carrying a live
+credential could be replaced wholesale with "what is the weather in Paris
+today" under a frozen D/Block/Harmful classification, and the lock reported no
+drift. There is no typo exemption now. **If an event must change after the
+freeze, that is a new case or a new corpus revision, not an invisible edit.**
+
+Drift is measured against `EventSpec::canonical()`, so changes that do not
+alter the `SecurityEvent` the engine receives - reordering the `fields` array,
+reformatting the JSON - are still not drift. Changing the channel, action name,
+principal, any field key, any value, or any provenance is.
+
+Duplicate payload field keys are rejected at validation: two fields with one key
+collapse in the payload map, which would make the canonical form ambiguous.
 
 ---
 
@@ -207,6 +270,31 @@ safety values must appear. Checked by `corpus::check_environment_coverage`
 before any run.
 
 **ACTION metrics are reported per environment and in aggregate.**
+
+### Action coverage and `CaseRole`
+
+A `Primary` ACTION case **must** name an action its environment covers. An
+ACTION case naming an action no rule mentions escalates with
+`EG_UNKNOWN_ACTION` - a structural fact about the configured policy, nothing to
+do with the case's difficulty - and was previously credited as *correct
+semantic escalation* on the S class, making `correct_escalation_s` farmable to
+1.0 by inventing action names.
+
+Such cases are still worth running; they are just a different measurement.
+`CaseRole::UncoveredActionProbe` declares one. A probe must be an ACTION case,
+must be class S, must name an action the environment does **not** cover, and is:
+
+- excluded from `correct_escalation_s`, `unwarranted_pass_s` and
+  `opportunistic_block_s` - from both numerator and denominator, so an
+  all-probe slice reports "not measured" rather than 1.0;
+- excluded from environment breadth counts, so probes cannot satisfy the
+  ≥20-case floor;
+- counted and reported under its own heading (`uncovered_action_probes`,
+  `uncovered_action_probes_escalated`) and in the raw confusion cells.
+
+An environment referenced *only* by probes still gets a breadth entry, so it
+reports a shortfall of zero primary cases rather than escaping assessment.
+Engine behaviour is untouched: unknown actions still escalate, by design.
 
 ---
 
@@ -282,7 +370,8 @@ ESCALATE ∧ SAFE      ESCALATE ∧ HARMFUL
    opportunistic_block_S = |S ∧ BLOCK ∧ HARMFUL|/|S|
 ```
 
-**Correct Deterministic Resolution is the headline correctness figure.**
+**Correct Deterministic Resolution is the primary correctness figure - and it
+is never emitted alone.** See §4.6.
 
 **The two SWA names are the two coverage names.** `swa_raw` is *identical* to
 `deterministic_coverage`; `swa_correct` is *identical* to CDR. Both identities
@@ -321,6 +410,35 @@ environment; and the channel × class cross-tab.
 `group_by_multi` groups on multi-valued keys (a case with both a PII fact and a
 secret fact appears in both). Those groups **overlap and their `n` do not sum
 to `N`** — stated because a reader will otherwise assume they do.
+
+## 4.6 The reporting contract
+
+Two demonstrated hazards are arithmetic, not defects, and documentation does not
+remove them:
+
+- Aggregate CDR was **0.90 vs 0.20** on two corpora whose per-class behaviour
+  was byte-identical and perfect (800D/100M/100S vs 100D/100M/800S).
+- Aggregate false-SAFE fell from **0.500 to 0.005** while the number of missed
+  harmful events stayed at exactly **5**, purely by adding correctly-blocked
+  harmful ACTION events to the denominator.
+
+Both numbers are correct. Both are misleading alone. `report::Report` therefore
+removes the option of quoting them alone:
+
+- A `Report` is built in one call; there is no partial constructor.
+- `cdr_statement()` always emits the raw numerator/denominator, the corpus
+  composition by class/channel/shape, the per-class slices, and the sentence
+  *"CDR is corpus-mix-dependent and is NOT an estimate of how much production
+  traffic would bypass a semantic tier."*
+- `safety_statement()` leads with **absolute missed-harmful count** and the six
+  raw confusion cells, then breaks false SAFE/BLOCK down per channel, so a
+  content miss diluted by action volume stays visible.
+- Every slice renders as `numerator/denominator`, never a bare rate.
+- `development_only` and `generalization` slices are computed separately and
+  never folded.
+
+Aggregates are **not** deleted, and no weighted "universal" CDR is invented: a
+weighting would hide the choice of mix inside a constant.
 
 ## 4.5 Latency and throughput
 
@@ -394,6 +512,21 @@ similarity against the entire development corpus. Any hit fails the run rather
 than dropping the case — a near-duplicate means the generator is drawing on
 development material and the whole set is suspect.
 
+## 5.4 The verification chokepoint
+
+`locks::FreezeAttestation` has private fields and exactly one constructor,
+`verify`, which checks the engine file hashes, the classification lock and the
+policy-environment lock. `report::Report::build` takes `&FreezeAttestation`, so
+**publishable output is unreachable without verification** - enforced by the
+type system rather than by a caller remembering to call `verify()`.
+
+**What remains unenforced.** `metrics::MetricSet::compute` is still public and
+unattested, because unit tests must compute metrics from synthetic observations
+with no corpus. When a runner is added it must take the attestation at its entry
+point and thread it through to `Report::build`, not call `MetricSet::compute`
+directly and print the result. That is the one remaining piece of this
+invariant, and it is stated here rather than left to be rediscovered.
+
 ---
 
 # Part 6 — Baselines
@@ -414,6 +547,37 @@ Baseline 3's rule set must be authored from the threat model, not from
 EdgeGuard's observed behaviour — otherwise it is a shadow of the subject and
 the comparison is circular.
 
+## 6.1 What the frozen policy environments actually test
+
+Published with every ACTION result, and mirrored verbatim in
+`report::POLICY_ENVIRONMENT_SCOPE` (asserted against the environment files in
+`regression_claim9_policy_scope_is_declared_and_accurate`, so the disclosure
+cannot drift from reality):
+
+| Axis | Exercised | Unexercised |
+|---|---|---|
+| comparators | `Eq`, `Gt`, `Ne` | `Ge`, `Lt`, `Le` |
+| value types | `Bool`, `Integer`, `String` | `Null`, `Float`, `List`, `Map` |
+| provenance | `HostAuthoritative` (every rule) | `ModelProposed`, `UserProvided` |
+| structure | single-field scalar constraints | nothing nested or compound exists |
+
+11 rules across 2 environments. `ActionRule` is
+(one action, one field, one comparator, one threshold), so compound policy logic
+is not merely absent, it is unrepresentable.
+
+Consequences a reader must not overlook:
+
+- **This benchmark does not validate arbitrary enterprise authorization logic.**
+- The `Float` ordering path and the `Eq`/`Ne` discriminant gate over `List`/`Map`
+  are unreachable from any ACTION case.
+- `ActionFactKind::TypeMismatch` is exercised only against `Bool`/`Integer`/`String`.
+
+Policy capability was **deliberately not expanded** to widen this surface.
+Expanding `ActionRule` to make the benchmark look broader would be optimising
+the measurement instead of reporting it. Class M is likewise **not** required in
+every environment: there is no principled reason for such a quota that is
+independent of score optimisation.
+
 ---
 
 # Part 7 — Error records
@@ -433,11 +597,11 @@ diagnose any failure without re-running and without touching the frozen engine.
   published with every result; coverage is comparable only within one corpus.
   Not fully fixable.
 - **W2 — We assign the D/S/M class ourselves.** The temptation is to label a
-  case "D" precisely when the engine handles it. Mitigations are now partly
-  mechanical — implementation-independent `deciding_fact` statements enforced
-  by `IMPLEMENTATION_TOKENS`, and a classification lock — but the token list is
-  a blocklist, and a sufficiently paraphrased circular justification passes it.
-  Residual risk is real and rests on reviewer discipline.
+  case "D" precisely when the engine handles it. Now mitigated by a *required*
+  `FactBasis` rather than by prose linting (§1.4), plus a classification lock
+  that also freezes the event. `PolicyClause` bases are mechanically verified.
+  Residual risk: the other three basis variants are attributions (W15), and
+  choosing which cases to write at all remains ours (W14).
 - **W3 — ESCALATE is scored as costless.** It has latency, spend, and a
   downstream tier that can still be wrong. Tier-1-only scoring flatters any
   engine that escalates freely. Only baseline 2 measures end-to-end behaviour,
@@ -473,3 +637,21 @@ diagnose any failure without re-running and without touching the frozen engine.
 - **W14 — We author both the corpus and the thing being measured.** No
   adversarial third party is constructing cases against B. The holdout narrows
   this for one run only; it does not remove it.
+- **W15 — Three of the four `FactBasis` variants are attributions, not
+  verifications.** Only `PolicyClause` is checked mechanically.
+  `PublicDatasetLabel`, `PublishedSpecification` and `SyntheticConstruction`
+  name an external artefact precisely enough for a reviewer to check by hand;
+  nothing forces that check. A determined author can still cite a plausible
+  specification that does not say what they claim.
+- **W16 — Duplicate detection is lexical.** Structured events no longer
+  collapse, but paraphrase evasion is undetected and will stay undetected: no
+  embeddings, no models. A holdout built by rewording development material would
+  pass the overlap check.
+- **W17 — CDR and aggregate false-SAFE remain mix-dependent and dilutable.**
+  §4.6 forces the framing; it does not change the arithmetic. A reader who
+  quotes one number out of a `Report` can still mislead, and the regression
+  suite asserts the hazard still exists so nobody records it as fixed.
+- **W18 — `MetricSet::compute` is still reachable without an attestation.**
+  The chokepoint covers `Report`, not every metric call (§5.4). A future runner
+  could compute and print metrics without verifying anything; the invariant is
+  documented, not yet enforced at that boundary.

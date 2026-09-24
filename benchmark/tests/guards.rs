@@ -96,6 +96,7 @@ fn case(channel: Channel, fields: Vec<FieldSpec>, gt: GroundTruth) -> CaseRecord
         case_id: "case-0001".to_string(),
         source: Source::SyntheticFacts,
         usage: UsageClass::ExternalEvaluation,
+        role: CaseRole::Primary,
         policy_environment_id: (channel == Channel::Action).then(|| "finance_company".to_string()),
         event: EventSpec {
             channel,
@@ -132,6 +133,10 @@ fn content_fact() -> DecidingFact {
         domain: FactDomain::Content,
         content_kind: Some(ContentFactKind::Secret),
         action_kind: None,
+        basis: FactBasis::PublishedSpecification {
+            specification: "AWS access key identifier format".into(),
+            section: "AKIA prefix + 16 base32 chars".into(),
+        },
         statement: "the message body contains a 40-character AWS secret access key next to its \
                     key id, which an auditor can read directly off the payload"
             .to_string(),
@@ -144,6 +149,11 @@ fn action_fact() -> DecidingFact {
         domain: FactDomain::Action,
         content_kind: None,
         action_kind: Some(ActionFactKind::AmountLimit),
+        basis: FactBasis::PolicyClause {
+            environment_id: "finance_company".into(),
+            environment_version: "v1".into(),
+            policy_id: "finance.payment.delegated_authority".into(),
+        },
         statement: "the host-authoritative payment amount is 1,250,000 minor units, above the \
                     1,000,000 delegated authority the operator's policy states"
             .to_string(),
@@ -335,7 +345,12 @@ fn reclassifying_a_case_after_the_lock_is_detected() {
 }
 
 #[test]
-fn editing_a_payload_typo_is_not_a_reclassification() {
+fn editing_a_payload_after_the_lock_is_now_drift() {
+    // This test previously asserted the opposite. The tolerance it protected -
+    // "a prose typo is not a reclassification" - turned out to be unbounded:
+    // an entire payload could be replaced under a frozen classification with
+    // no drift reported. There is no typo exemption now. A payload that must
+    // change after the freeze is a new case or a new corpus revision.
     let original = case(
         Channel::Input,
         vec![text_field("teh quick brown fox")],
@@ -347,10 +362,48 @@ fn editing_a_payload_typo_is_not_a_reclassification() {
         vec![text_field("the quick brown fox")],
         s_truth(),
     );
-    assert!(
-        lock.verify(std::slice::from_ref(&corrected)).is_empty(),
-        "the lock covers what a case claims to prove, not its prose"
+    assert_eq!(
+        lock.verify(std::slice::from_ref(&corrected)),
+        vec![locks::ClassificationDrift::Reclassified {
+            case_id: "case-0001".to_string()
+        }],
+        "the event is part of the frozen subject"
     );
+}
+
+#[test]
+fn reordering_payload_fields_is_not_drift() {
+    // Field order is not semantic: the payload becomes a map. Only changes
+    // that alter the SecurityEvent the engine receives count as drift.
+    let original = case(
+        Channel::Input,
+        vec![text_field("hello"), int_field_for_order()],
+        s_truth(),
+    );
+    let lock = ClassificationLock::build(std::slice::from_ref(&original));
+    let mut reordered = original.clone();
+    reordered.event.fields.reverse();
+    assert!(lock.verify(std::slice::from_ref(&reordered)).is_empty());
+}
+
+fn int_field_for_order() -> FieldSpec {
+    FieldSpec {
+        key: "counter".to_string(),
+        provenance: ProvenanceSpec::HostAuthoritative,
+        value: ValueSpec::Integer(7),
+    }
+}
+
+#[test]
+fn a_duplicate_payload_field_key_is_rejected() {
+    // Two fields with one key collapse in the payload map, so the canonical
+    // form - and therefore the freeze - would be ill-defined.
+    let record = case(
+        Channel::Input,
+        vec![text_field("first"), text_field("second")],
+        s_truth(),
+    );
+    assert!(validate(&record).is_err());
 }
 
 #[test]

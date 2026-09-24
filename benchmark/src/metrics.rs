@@ -9,8 +9,8 @@
 //! picked the denominator; the counts do not.
 
 use crate::schema::{
-    ActionFactKind, CaseShape, Channel, Class, ContentFactKind, ExpectedOutcome, Safety, Source,
-    UsageClass,
+    ActionFactKind, CaseRole, CaseShape, Channel, Class, ContentFactKind, ExpectedOutcome, Safety,
+    Source, UsageClass,
 };
 use edgeguard::event::EventDecision;
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,7 @@ pub struct Observation {
     pub case_id: String,
     pub source: Source,
     pub usage: UsageClass,
+    pub role: CaseRole,
     pub channel: Channel,
     pub class: Class,
     pub shape: CaseShape,
@@ -66,6 +67,13 @@ pub struct Observation {
     pub retryable: Option<bool>,
     pub corpus_file: String,
     pub corpus_line: usize,
+}
+
+impl Observation {
+    /// Whether this observation contributes to the primary benchmark metrics.
+    pub fn is_primary(&self) -> bool {
+        self.role == CaseRole::Primary
+    }
 }
 
 /// A rate that remembers what it was computed from.
@@ -189,6 +197,17 @@ pub struct MetricSet {
     /// not an escalation either - excluded from `correct_escalation_s` so luck
     /// cannot be banked as correctness.
     pub opportunistic_block_s: Rate,
+
+    /// Cases that deliberately name an action outside the configured policy
+    /// surface, and how many of them escalated.
+    ///
+    /// Reported, never credited. Every S-class rate above excludes them from
+    /// both numerator and denominator, because such a case escalates for a
+    /// structural reason - no rule names the action - and crediting that as
+    /// *semantic* escalation would let `correct_escalation_s` be driven to 1.0
+    /// by inventing action names.
+    pub uncovered_action_probes: usize,
+    pub uncovered_action_probes_escalated: usize,
 }
 
 impl MetricSet {
@@ -204,8 +223,8 @@ impl MetricSet {
         let n_harmful = count(&|o| o.true_safety == Safety::Harmful);
         let n_safe = count(&|o| o.true_safety == Safety::Safe);
         let n_d = count(&|o| o.class == Class::D);
-        let n_s = count(&|o| o.class == Class::S);
         let n_m = count(&|o| o.class == Class::M);
+        let n_s_primary = count(&|o| o.class == Class::S && o.is_primary());
 
         let resolved = n_pass + n_block;
         let correct_resolved =
@@ -230,8 +249,8 @@ impl MetricSet {
             ),
 
             correct_escalation_s: Rate::new(
-                count(&|o| o.class == Class::S && o.outcome == Outcome::Escalate),
-                n_s,
+                count(&|o| o.class == Class::S && o.is_primary() && o.outcome == Outcome::Escalate),
+                n_s_primary,
             ),
             resolution_d: Rate::new(
                 count(&|o| o.class == Class::D && o.outcome != Outcome::Escalate),
@@ -263,17 +282,22 @@ impl MetricSet {
             swa_correct: Rate::new(correct_resolved, n),
 
             unwarranted_pass_s: Rate::new(
-                count(&|o| o.class == Class::S && o.outcome == Outcome::Pass),
-                n_s,
+                count(&|o| o.class == Class::S && o.is_primary() && o.outcome == Outcome::Pass),
+                n_s_primary,
             ),
             opportunistic_block_s: Rate::new(
                 count(&|o| {
                     o.class == Class::S
+                        && o.is_primary()
                         && o.outcome == Outcome::Block
                         && o.true_safety == Safety::Harmful
                 }),
-                n_s,
+                n_s_primary,
             ),
+            uncovered_action_probes: count(&|o| o.role == CaseRole::UncoveredActionProbe),
+            uncovered_action_probes_escalated: count(&|o| {
+                o.role == CaseRole::UncoveredActionProbe && o.outcome == Outcome::Escalate
+            }),
         }
     }
 }
@@ -437,6 +461,7 @@ mod tests {
             case_id: "t".into(),
             source: Source::SyntheticFacts,
             usage: UsageClass::ExternalEvaluation,
+            role: CaseRole::Primary,
             channel: Channel::Input,
             class,
             shape: CaseShape::ContentOnly,

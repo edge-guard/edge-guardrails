@@ -22,6 +22,8 @@
 //! - [`corpus`] - loading, coherence validation, and the leakage lints.
 //! - [`locks`] - classification, policy-environment, and holdout-burn freezes.
 //! - [`metrics`] - raw confusion counts, every rate, and the percentiles.
+//! - [`report`] - the reporting contract: aggregates are never emitted alone,
+//!   and a report cannot be built without a [`locks::FreezeAttestation`].
 //! - [`baselines`] - routers under comparison, including the ones that report
 //!   as unavailable rather than being imitated.
 //! - [`freeze`] - verification that the engine has not moved.
@@ -35,4 +37,5 @@ pub mod freeze;
 pub mod locks;
 pub mod metrics;
 pub mod policy_env;
+pub mod report;
 pub mod schema;

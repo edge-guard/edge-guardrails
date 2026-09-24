@@ -2,8 +2,7 @@
 
 use crate::policy_env::{EnvironmentUsage, PolicyEnvironmentSet};
 use crate::schema::{
-    build_event, CaseRecord, CaseShape, Channel, Class, ExpectedOutcome, Source, UsageClass,
-    ValueSpec,
+    build_event, CaseRecord, CaseRole, CaseShape, Channel, Class, Source, UsageClass,
 };
 use edgeguard::event::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -168,35 +167,40 @@ pub fn validate(record: &CaseRecord) -> Result<(), String> {
 
     match record.ground_truth.class {
         Class::D | Class::M => {
-            if record.ground_truth.expected == ExpectedOutcome::Escalate {
-                return Err(format!(
-                    "class {:?} means a deterministic fact settles the event, so the expected \
-                     outcome cannot be Escalate",
-                    record.ground_truth.class
-                ));
-            }
             if record.ground_truth.deciding_facts.is_empty() {
                 return Err(format!(
-                    "class {:?} requires at least one deciding_fact stated independently of any \
-                     implementation",
+                    "class {:?} requires at least one deciding_fact citing an \
+                     implementation-independent basis",
                     record.ground_truth.class
                 ));
             }
         }
         Class::S => {
-            if record.ground_truth.expected != ExpectedOutcome::Escalate {
-                return Err(
-                    "class S means no deterministic fact settles the event, so the \
-                            expected outcome must be Escalate"
-                        .to_string(),
-                );
-            }
             if !record.ground_truth.deciding_facts.is_empty() {
                 return Err(
                     "class S must not carry a deciding_fact; a case with one is D or M".to_string(),
                 );
             }
         }
+    }
+
+    // The full (class, true_safety, expected) truth table - see
+    // `schema::is_coherent` for the matrix and why only six of eighteen
+    // combinations are admissible.
+    if !crate::schema::is_coherent(
+        record.ground_truth.class,
+        record.ground_truth.true_safety,
+        record.ground_truth.expected,
+    ) {
+        return Err(format!(
+            "incoherent ground truth: class {:?} with true_safety {:?} cannot expect {:?}. \
+             For D and M, expected Block <=> Harmful and expected Pass <=> Safe; S always \
+             expects Escalate. A contradictory pair would let one event count as both a \
+             correct deterministic decision and a safety error.",
+            record.ground_truth.class,
+            record.ground_truth.true_safety,
+            record.ground_truth.expected
+        ));
     }
 
     for fact in &record.ground_truth.deciding_facts {
@@ -215,6 +219,7 @@ pub fn validate(record: &CaseRecord) -> Result<(), String> {
         ));
     }
 
+    check_role(record)?;
     check_usage(record)?;
     check_leakage(record)
 }
@@ -232,6 +237,35 @@ pub fn check_implementation_independence(statement: &str) -> Result<(), String> 
         }
     }
     Ok(())
+}
+
+/// A probe is an ACTION case by construction, and a primary case may not be
+/// one by accident.
+///
+/// Whether the named action is actually covered by the environment cannot be
+/// decided here - this function does not have the environment - so it is
+/// settled in [`check_environment_coverage`]. This check is the half that is
+/// decidable from the record alone.
+pub fn check_role(record: &CaseRecord) -> Result<(), String> {
+    match record.role {
+        CaseRole::Primary => Ok(()),
+        CaseRole::UncoveredActionProbe => {
+            if record.event.channel != Channel::Action {
+                return Err(format!(
+                    "role UncoveredActionProbe is only meaningful on an Action case, not {:?}",
+                    record.event.channel
+                ));
+            }
+            if record.ground_truth.class != Class::S {
+                return Err(format!(
+                    "an UncoveredActionProbe has no deterministic fact available to it, so its \
+                     class must be S, not {:?}",
+                    record.ground_truth.class
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Development-contaminated material may never claim to be external evidence.
@@ -322,9 +356,21 @@ pub fn load_dir(dir: &Path) -> Result<Vec<LoadedCase>, CaseError> {
     Ok(out)
 }
 
-/// Every case must name an environment that exists, and every environment must
-/// be broad enough that its per-environment metrics describe a policy rather
-/// than a handful of fixtures.
+/// Cross-case checks that need the frozen environments.
+///
+/// Three things are settled here, none of which a single record can decide on
+/// its own:
+///
+/// 1. Every referenced environment exists.
+/// 2. Every `PolicyClause` fact cites a clause that actually exists, in the
+///    environment the case references. This is what makes an Action-domain
+///    ground truth independently checkable rather than a claim about the
+///    engine.
+/// 3. Action coverage and role agree - a `Primary` ACTION case must name an
+///    action its environment covers, and an `UncoveredActionProbe` must not.
+///
+/// Breadth counts exclude probes, so an environment cannot reach the breadth
+/// floor on cases that sit outside its configured surface.
 pub fn check_environment_coverage(
     cases: &[LoadedCase],
     environments: &PolicyEnvironmentSet,
@@ -336,14 +382,85 @@ pub fn check_environment_coverage(
         let Some(id) = &case.record.policy_environment_id else {
             continue;
         };
-        if environments.get(id).is_none() {
+        let Some(env) = environments.get(id) else {
             problems.push(format!(
                 "case {:?} references unknown policy environment {id:?}",
                 case.record.case_id
             ));
             continue;
+        };
+
+        // (2) Every cited policy clause must exist in this environment.
+        for fact in &case.record.ground_truth.deciding_facts {
+            if let crate::schema::FactBasis::PolicyClause {
+                environment_id,
+                environment_version,
+                policy_id,
+            } = &fact.basis
+            {
+                if environment_id != id {
+                    problems.push(format!(
+                        "case {:?} cites a clause of environment {environment_id:?} but is \
+                         evaluated under {id:?}",
+                        case.record.case_id
+                    ));
+                    continue;
+                }
+                if environment_version != &env.version {
+                    problems.push(format!(
+                        "case {:?} cites environment {environment_id:?} version \
+                         {environment_version:?}, but the frozen environment is version {:?}",
+                        case.record.case_id, env.version
+                    ));
+                    continue;
+                }
+                if !env.rules.iter().any(|r| &r.policy_id == policy_id) {
+                    problems.push(format!(
+                        "case {:?} cites policy clause {policy_id:?}, which does not exist in \
+                         environment {id:?}",
+                        case.record.case_id
+                    ));
+                }
+            }
         }
+
+        // (3) Coverage and role must agree.
+        let covered = case
+            .record
+            .event
+            .action_name
+            .as_ref()
+            .is_some_and(|name| env.covered_actions().iter().any(|a| a == name));
+        match (case.record.role, covered) {
+            (CaseRole::Primary, false) => {
+                problems.push(format!(
+                    "case {:?} is Primary but names action {:?}, which environment {id:?} does \
+                     not cover. Escalation would then be caused by the action being unnamed, \
+                     not by the case's difficulty. Mark it UncoveredActionProbe to measure that \
+                     behaviour separately.",
+                    case.record.case_id, case.record.event.action_name
+                ));
+                continue;
+            }
+            (CaseRole::UncoveredActionProbe, true) => {
+                problems.push(format!(
+                    "case {:?} is an UncoveredActionProbe but names action {:?}, which \
+                     environment {id:?} does cover",
+                    case.record.case_id, case.record.event.action_name
+                ));
+                continue;
+            }
+            _ => {}
+        }
+
+        // Every referenced environment gets an entry, so its breadth is always
+        // assessed. Probes create the entry but increment nothing: an
+        // environment referenced only by probes therefore reports a shortfall
+        // of zero primary cases, rather than escaping assessment entirely.
         let entry = usage.entry(id.clone()).or_default();
+        if case.record.role != CaseRole::Primary {
+            continue;
+        }
         entry.0.cases += 1;
         entry.1.insert(case.record.ground_truth.class);
         match case.record.ground_truth.true_safety {
@@ -405,23 +522,29 @@ pub fn composition(cases: &[LoadedCase]) -> Composition {
     }
 }
 
-/// Normalized text of every string a case exposes, for duplicate detection
-/// between the development corpus and a holdout.
+/// Canonical representation of a case's event, for duplicate detection between
+/// the development corpus and a holdout.
+///
+/// Delegates to [`crate::schema::EventSpec::canonical`], which covers every
+/// `ValueSpec` variant and preserves channel, action name, principal, field
+/// names, provenance and values, with fields sorted by key and maps in
+/// `BTreeMap` order.
+///
+/// The previous implementation walked only `ValueSpec::String`, so every
+/// structured-only ACTION event - any two payments, whatever their amounts -
+/// normalised to the empty string and compared equal. That is fixed.
+///
+/// What is **not** fixed, and is not fixable without machinery this benchmark
+/// has ruled out: this is a lexical representation. Two paraphrases of the same
+/// attack are different strings and will not be detected as duplicates. No
+/// embedding or model is used, by design; the limitation is recorded in
+/// `docs/DESIGN.md` instead of being papered over.
 pub fn normalized_text(record: &CaseRecord) -> String {
-    fn walk(v: &ValueSpec, out: &mut String) {
-        match v {
-            ValueSpec::String(s) => {
-                out.push_str(&s.to_lowercase());
-                out.push('\u{1}');
-            }
-            ValueSpec::List(items) => items.iter().for_each(|i| walk(i, out)),
-            ValueSpec::Map(entries) => entries.values().for_each(|i| walk(i, out)),
-            _ => {}
-        }
-    }
-    let mut out = String::new();
-    for field in &record.event.fields {
-        walk(&field.value, &mut out);
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    record
+        .event
+        .canonical()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }

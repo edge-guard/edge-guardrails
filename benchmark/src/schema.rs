@@ -8,8 +8,7 @@
 //! 2. A [`GroundTruth`] - what the engine must never see.
 //! 3. A `policy_environment_id` - a *reference* to a frozen, independently
 //!    authored [`crate::policy_env::PolicyEnvironment`]. A case may name an
-//!    environment; it may never carry rules of its own. A rule written to make
-//!    one case decidable measures the rule author, not the engine.
+//!    environment; it may never carry rules of its own.
 //!
 //! [`build_event`] accepts only the first, so there is no expression in this
 //! crate that can place a label, an expected verdict, a D/S/M class, or any
@@ -23,7 +22,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 // Side 1: what the engine sees.
 // ---------------------------------------------------------------------------
 
-/// Which of the three contract channels this case exercises.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Channel {
     Input,
@@ -31,7 +29,7 @@ pub enum Channel {
     Action,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ProvenanceSpec {
     HostAuthoritative,
     ModelProposed,
@@ -84,6 +82,35 @@ impl From<&ValueSpec> for Value {
     }
 }
 
+impl ValueSpec {
+    /// Injective canonical rendering covering **every** variant.
+    ///
+    /// Strings are length-prefixed so no value can be forged to collide with
+    /// another by embedding the separators, and floats use `{:?}`, which is
+    /// Rust's shortest round-tripping form and therefore stable. `Map` is a
+    /// `BTreeMap`, so key order is sorted rather than hash order.
+    pub fn canonical(&self) -> String {
+        match self {
+            ValueSpec::Null => "null".to_string(),
+            ValueSpec::Bool(b) => format!("bool({b})"),
+            ValueSpec::Integer(i) => format!("int({i})"),
+            ValueSpec::Float(f) => format!("float({f:?})"),
+            ValueSpec::String(s) => format!("str({}:{s})", s.len()),
+            ValueSpec::List(items) => {
+                let inner: Vec<String> = items.iter().map(ValueSpec::canonical).collect();
+                format!("list({}:[{}])", items.len(), inner.join(","))
+            }
+            ValueSpec::Map(entries) => {
+                let inner: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| format!("{}:{k}={}", k.len(), v.canonical()))
+                    .collect();
+                format!("map({}:{{{}}})", entries.len(), inner.join(","))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSpec {
     pub key: String,
@@ -106,13 +133,63 @@ pub struct EventSpec {
 impl EventSpec {
     pub fn validate(&self) -> Result<(), String> {
         match (self.channel, &self.action_name) {
-            (Channel::Action, None) => Err("channel Action requires an action_name".to_string()),
-            (Channel::Input | Channel::Output, Some(name)) => Err(format!(
-                "channel {:?} must not carry an action_name (got {name:?})",
-                self.channel
-            )),
-            _ => Ok(()),
+            (Channel::Action, None) => {
+                return Err("channel Action requires an action_name".to_string())
+            }
+            (Channel::Input | Channel::Output, Some(name)) => {
+                return Err(format!(
+                    "channel {:?} must not carry an action_name (got {name:?})",
+                    self.channel
+                ))
+            }
+            _ => {}
         }
+        // The payload is a map, so a repeated key is ambiguous: one of the two
+        // values silently wins. It would also make the canonical form below
+        // ill-defined, and with it the event freeze.
+        let mut seen = BTreeSet::new();
+        for field in &self.fields {
+            if !seen.insert(field.key.as_str()) {
+                return Err(format!("duplicate payload field key {:?}", field.key));
+            }
+        }
+        Ok(())
+    }
+
+    /// Canonical, semantics-preserving rendering of the event.
+    ///
+    /// Two `EventSpec`s render identically **iff** they produce the same
+    /// `SecurityEvent`. Field order is not semantic - the payload is a map -
+    /// so fields are sorted by key; everything else is significant and appears
+    /// here: channel, action name, principal, every field key, every
+    /// provenance, and every value of every type.
+    ///
+    /// This is the basis of both the event freeze ([`crate::locks`]) and
+    /// duplicate detection ([`crate::corpus::normalized_text`]).
+    pub fn canonical(&self) -> String {
+        let mut lines = Vec::with_capacity(self.fields.len() + 2);
+        lines.push(match (&self.channel, &self.action_name) {
+            (Channel::Input, _) => "kind=INPUT".to_string(),
+            (Channel::Output, _) => "kind=OUTPUT".to_string(),
+            (Channel::Action, Some(name)) => format!("kind=ACTION({}:{name})", name.len()),
+            (Channel::Action, None) => "kind=ACTION(<missing>)".to_string(),
+        });
+        lines.push(match &self.principal_id {
+            Some(p) => format!("principal({}:{p})", p.len()),
+            None => "principal=<none>".to_string(),
+        });
+        let mut fields: Vec<&FieldSpec> = self.fields.iter().collect();
+        fields.sort_by(|a, b| a.key.cmp(&b.key));
+        for f in fields {
+            lines.push(format!(
+                "field({}:{})@{:?}={}",
+                f.key.len(),
+                f.key,
+                f.provenance,
+                f.value.canonical()
+            ));
+        }
+        lines.join("\n")
     }
 }
 
@@ -153,47 +230,27 @@ pub fn build_event(spec: &EventSpec) -> SecurityEvent {
 /// Ground-truth class. Frozen before execution; never revised from results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Class {
-    /// Deterministically decidable: deterministic facts suffice to reach PASS
-    /// or BLOCK with no semantic reasoning.
     D,
-    /// Semantically decidable: no deterministic fact settles it, so a correct
-    /// fast path must not pretend to know.
     S,
-    /// Mixed: semantically ambiguous or adversarial content, plus a
-    /// deterministic fact that independently settles the outcome.
     M,
 }
 
 /// Which kind of deterministic fact decides a case.
-///
-/// The axis that keeps EdgeGuard's full thesis measurable: it is a
-/// deterministic fast path across content *and* structured action facts, not
-/// an action policy evaluator. Reported separately, always.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum FactDomain {
-    /// A fact readable from the content of the event itself.
     Content,
-    /// A fact readable from the structured arguments of an action.
     Action,
 }
 
-/// Content-fact taxonomy, so CONTENT results are reportable per kind rather
-/// than as one undifferentiated bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ContentFactKind {
-    /// Personally identifying information present in the content.
     Pii,
-    /// A credential, key, or token present in the content.
     Secret,
-    /// A deterministic literal or structural pattern.
     DeterministicPattern,
-    /// Encoded, escaped, or otherwise obfuscated content.
     ObfuscationOrEncoding,
-    /// A deterministic content constraint stated by an operator policy.
     PolicyContentRule,
 }
 
-/// Action-fact taxonomy, mirroring the structured-fact families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ActionFactKind {
     AmountLimit,
@@ -204,23 +261,118 @@ pub enum ActionFactKind {
     StructuredConstraint,
 }
 
-/// One deterministic fact that, on its own, settles the security outcome.
+/// Where a deciding fact's authority comes from.
 ///
-/// `statement` must be human-auditable and written **about the event**, not
-/// about any implementation: an auditor with no knowledge of this codebase must
-/// be able to read it, look at the event, and agree. `corpus::validate` rejects
-/// statements that name an implementation, a detector, or current behavior -
-/// see [`crate::corpus::IMPLEMENTATION_TOKENS`]. A fact whose justification is
-/// "the engine has a rule for it" is circular and disqualifies the case.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// This is the benchmark's answer to "why is this fact deterministic, without
+/// referring to what EdgeGuard currently detects?". Every D/M deciding fact
+/// must cite one, and none of the four variants can be satisfied by pointing
+/// at engine behaviour. A prose blocklist could not deliver this property -
+/// it was bypassed five times out of five - because it constrains *wording*,
+/// while this constrains *what the claim rests on*.
+///
+/// Only [`FactBasis::PolicyClause`] is mechanically verifiable here: it is
+/// checked against the frozen environment the case references. The other three
+/// are **attributions**: they name an external artefact precisely enough that a
+/// reviewer can go and check, which is weaker than verification and is recorded
+/// as such in `docs/DESIGN.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FactBasis {
+    /// A clause of a frozen policy environment. Verified: the environment and
+    /// `policy_id` must exist and must be the one the case references.
+    PolicyClause {
+        environment_id: String,
+        environment_version: String,
+        policy_id: String,
+    },
+    /// The label shipped with a row of a public dataset.
+    PublicDatasetLabel {
+        dataset: String,
+        version: String,
+        row_id: String,
+        label: String,
+    },
+    /// A published external specification the value provably conforms to
+    /// (a credential format, an identifier checksum, an encoding standard).
+    PublishedSpecification {
+        specification: String,
+        section: String,
+    },
+    /// A construction recipe frozen before generation: the fact is present
+    /// because the generator put it there, by a recipe fixed in advance.
+    SyntheticConstruction {
+        recipe_id: String,
+        recipe_version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<u64>,
+    },
+}
+
+impl FactBasis {
+    pub fn label(&self) -> &'static str {
+        match self {
+            FactBasis::PolicyClause { .. } => "PolicyClause",
+            FactBasis::PublicDatasetLabel { .. } => "PublicDatasetLabel",
+            FactBasis::PublishedSpecification { .. } => "PublishedSpecification",
+            FactBasis::SyntheticConstruction { .. } => "SyntheticConstruction",
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let required: Vec<(&str, &str)> = match self {
+            FactBasis::PolicyClause {
+                environment_id,
+                environment_version,
+                policy_id,
+            } => vec![
+                ("environment_id", environment_id),
+                ("environment_version", environment_version),
+                ("policy_id", policy_id),
+            ],
+            FactBasis::PublicDatasetLabel {
+                dataset,
+                version,
+                row_id,
+                label,
+            } => vec![
+                ("dataset", dataset),
+                ("version", version),
+                ("row_id", row_id),
+                ("label", label),
+            ],
+            FactBasis::PublishedSpecification {
+                specification,
+                section,
+            } => vec![("specification", specification), ("section", section)],
+            FactBasis::SyntheticConstruction {
+                recipe_id,
+                recipe_version,
+                ..
+            } => vec![("recipe_id", recipe_id), ("recipe_version", recipe_version)],
+        };
+        for (name, value) in required {
+            if value.trim().is_empty() {
+                return Err(format!(
+                    "FactBasis::{} requires a non-empty {name}",
+                    self.label()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One deterministic fact that, on its own, settles the security outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecidingFact {
     pub domain: FactDomain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_kind: Option<ContentFactKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_kind: Option<ActionFactKind>,
-    /// e.g. "the host-authoritative transfer amount is 1,250,000, above the
-    /// environment's stated 1,000,000 ceiling".
+    /// Where this fact's authority comes from. Required.
+    pub basis: FactBasis,
+    /// Human-auditable restatement, for a reviewer. The *basis* carries the
+    /// authority; this carries the explanation.
     pub statement: String,
     /// Where in the event the fact is observable, e.g. `payload.amount`.
     pub observable_at: String,
@@ -234,49 +386,98 @@ impl DecidingFact {
         if self.observable_at.trim().is_empty() {
             return Err("deciding fact observable_at is required".to_string());
         }
+        self.basis.validate()?;
         match (self.domain, self.content_kind, self.action_kind) {
             (FactDomain::Content, None, _) => {
-                Err("a Content deciding fact requires a content_kind".to_string())
+                return Err("a Content deciding fact requires a content_kind".to_string())
             }
             (FactDomain::Content, _, Some(_)) => {
-                Err("a Content deciding fact must not carry an action_kind".to_string())
+                return Err("a Content deciding fact must not carry an action_kind".to_string())
             }
             (FactDomain::Action, _, None) => {
-                Err("an Action deciding fact requires an action_kind".to_string())
+                return Err("an Action deciding fact requires an action_kind".to_string())
             }
             (FactDomain::Action, Some(_), _) => {
-                Err("an Action deciding fact must not carry a content_kind".to_string())
+                return Err("an Action deciding fact must not carry a content_kind".to_string())
             }
-            _ => Ok(()),
+            _ => {}
+        }
+        // An action fact is decided by the operator's standing policy, so it
+        // must cite the clause. A content fact cannot cite one: no frozen
+        // content policy environment exists to cite.
+        match (self.domain, &self.basis) {
+            (FactDomain::Action, FactBasis::PolicyClause { .. }) => Ok(()),
+            (FactDomain::Action, other) => Err(format!(
+                "an Action deciding fact must cite FactBasis::PolicyClause, not {}",
+                other.label()
+            )),
+            (FactDomain::Content, FactBasis::PolicyClause { .. }) => Err(
+                "a Content deciding fact cannot cite a PolicyClause: policy environments \
+                 describe actions, and no frozen content policy exists to cite"
+                    .to_string(),
+            ),
+            (FactDomain::Content, _) => Ok(()),
         }
     }
 }
 
-/// Which fact domains decide a case. Independent of [`Class`]: an M case may
-/// be decided by a content fact alone (obfuscated text carrying a secret), by
-/// an action fact alone (adversarial prose plus an over-limit amount), or by
-/// both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CaseShape {
     ContentOnly,
     ActionOnly,
     Mixed,
-    /// No deterministic fact decides this case. Only valid for class S.
     NoDeterministicFact,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ExpectedOutcome {
     Pass,
     Block,
     Escalate,
 }
 
-/// Whether the event is genuinely dangerous, independent of any engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Safety {
     Safe,
     Harmful,
+}
+
+/// The complete allowed (class, true_safety, expected) truth table.
+///
+/// | class | true_safety | expected | allowed |
+/// |-------|-------------|----------|---------|
+/// | D / M | Harmful     | Block    | yes     |
+/// | D / M | Safe        | Pass     | yes     |
+/// | D / M | Harmful     | Pass     | **no**  |
+/// | D / M | Safe        | Block    | **no**  |
+/// | D / M | either      | Escalate | **no**  |
+/// | S     | Harmful     | Escalate | yes     |
+/// | S     | Safe        | Escalate | yes     |
+/// | S     | either      | Pass     | **no**  |
+/// | S     | either      | Block    | **no**  |
+///
+/// Six of eighteen combinations are allowed.
+///
+/// For D and M this is the biconditional `expected == Block ⟺ true_safety ==
+/// Harmful`. Nothing is ambiguous here and nothing is left open: a
+/// deterministic fact that settles a *harmful* event settles it as a block,
+/// and one that settles a *safe* event settles it as a pass. The rejected
+/// combinations are not unusual cases, they are contradictions.
+///
+/// The consequence that matters: no single observation can now increment both
+/// `correct_deterministic_resolution` and `false_safe` (or `false_block`).
+/// CDR credit needs `observed == expected` with `observed != Escalate`; a false
+/// SAFE needs `observed == Pass` with `Harmful`. Those require `expected ==
+/// Pass` *and* `Harmful`, which this table forbids. Asserted exhaustively in
+/// `tests/guards.rs`.
+pub fn is_coherent(class: Class, true_safety: Safety, expected: ExpectedOutcome) -> bool {
+    match class {
+        Class::D | Class::M => matches!(
+            (true_safety, expected),
+            (Safety::Harmful, ExpectedOutcome::Block) | (Safety::Safe, ExpectedOutcome::Pass)
+        ),
+        Class::S => expected == ExpectedOutcome::Escalate,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,7 +488,6 @@ pub struct GroundTruth {
     /// Empty if and only if `class == S`.
     #[serde(default)]
     pub deciding_facts: Vec<DecidingFact>,
-    /// Why this case carries this class and expectation.
     pub rationale: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attack_family: Option<String>,
@@ -326,7 +526,6 @@ impl GroundTruth {
     }
 }
 
-/// Which physically separate corpus a case came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Source {
     PublicExternal,
@@ -334,37 +533,42 @@ pub enum Source {
     Holdout,
 }
 
-/// What a case is permitted to support.
-///
-/// Enforced at load time and honoured by the reporter: a `DevelopmentOnly`
-/// case never contributes to an external or generalization figure, because the
-/// engine's rules and thresholds were developed against it. Its score is a
-/// training score.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum UsageClass {
-    /// May support generalization claims.
     ExternalEvaluation,
-    /// Previously used for rule or threshold development, or derived from
-    /// material that was. Never contributes to generalization claims.
     DevelopmentOnly,
-    /// One-shot holdout. Burned for tuning once observed.
     Holdout,
 }
 
-/// One corpus line.
+/// What a case is allowed to contribute to.
+///
+/// Exists because of a demonstrated defect: an ACTION case naming an action no
+/// rule mentions escalates for a purely structural reason
+/// (`EG_UNKNOWN_ACTION`), and was being credited as *semantic* escalation on
+/// the S class. Such cases are still worth running - the behaviour is real and
+/// deliberate - but they are a different measurement and are reported as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+pub enum CaseRole {
+    /// Contributes to the primary benchmark metrics. An ACTION case in this
+    /// role must name an action its environment actually covers.
+    #[default]
+    Primary,
+    /// Deliberately probes engine behaviour outside the configured policy
+    /// surface. Excluded from every S-class metric and from policy-environment
+    /// breadth counts; reported under its own heading.
+    UncoveredActionProbe,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecord {
     pub case_id: String,
     pub source: Source,
     pub usage: UsageClass,
-    /// Names a frozen policy environment. Required for `Action`, forbidden
-    /// otherwise - the frozen engine consults action rules only on the Action
-    /// path. A case may reference an environment; it may never define rules.
+    #[serde(default)]
+    pub role: CaseRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_environment_id: Option<String>,
     pub event: EventSpec,
     pub ground_truth: GroundTruth,
-    /// Upstream dataset, licence, and row id for `PublicExternal`; generator
-    /// name and seed otherwise.
     pub origin: String,
 }
