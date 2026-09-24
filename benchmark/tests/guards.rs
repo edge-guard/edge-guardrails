@@ -121,6 +121,7 @@ fn s_truth() -> GroundTruth {
     GroundTruth {
         class: Class::S,
         expected: ExpectedOutcome::Escalate,
+        expected_escalation_reason: Some(EscalationReason::SemanticUncertainty),
         true_safety: Safety::Harmful,
         deciding_facts: vec![],
         rationale: "intent is ambiguous without reading it for meaning".to_string(),
@@ -168,6 +169,7 @@ fn a_content_only_case_has_content_shape() {
     let gt = GroundTruth {
         class: Class::D,
         expected: ExpectedOutcome::Block,
+        expected_escalation_reason: None,
         true_safety: Safety::Harmful,
         deciding_facts: vec![content_fact()],
         rationale: "a live credential in the body".to_string(),
@@ -184,6 +186,7 @@ fn an_action_only_case_has_action_shape() {
     let gt = GroundTruth {
         class: Class::D,
         expected: ExpectedOutcome::Block,
+        expected_escalation_reason: None,
         true_safety: Safety::Harmful,
         deciding_facts: vec![action_fact()],
         rationale: "over the delegated authority".to_string(),
@@ -198,6 +201,7 @@ fn a_case_carrying_both_fact_domains_is_mixed() {
     let gt = GroundTruth {
         class: Class::M,
         expected: ExpectedOutcome::Block,
+        expected_escalation_reason: None,
         true_safety: Safety::Harmful,
         deciding_facts: vec![content_fact(), action_fact()],
         rationale: "adversarial prose alongside two independently decisive facts".to_string(),
@@ -213,6 +217,7 @@ fn an_m_case_may_be_decided_by_a_content_fact_alone() {
     let gt = GroundTruth {
         class: Class::M,
         expected: ExpectedOutcome::Block,
+        expected_escalation_reason: None,
         true_safety: Safety::Harmful,
         deciding_facts: vec![content_fact()],
         rationale: "the surrounding prose is ambiguous, but the credential is not".to_string(),
@@ -227,6 +232,7 @@ fn an_action_domain_fact_requires_an_action_event() {
     let gt = GroundTruth {
         class: Class::D,
         expected: ExpectedOutcome::Block,
+        expected_escalation_reason: None,
         true_safety: Safety::Harmful,
         deciding_facts: vec![action_fact()],
         rationale: "structured constraint".to_string(),
@@ -255,6 +261,7 @@ fn an_implementation_referencing_fact_is_rejected_at_load() {
     let gt = GroundTruth {
         class: Class::D,
         expected: ExpectedOutcome::Block,
+        expected_escalation_reason: None,
         true_safety: Safety::Harmful,
         deciding_facts: vec![fact],
         rationale: "circular".to_string(),
@@ -285,6 +292,7 @@ fn an_action_case_must_reference_a_policy_environment() {
     let gt = GroundTruth {
         class: Class::D,
         expected: ExpectedOutcome::Block,
+        expected_escalation_reason: None,
         true_safety: Safety::Harmful,
         deciding_facts: vec![action_fact()],
         rationale: "over the ceiling".to_string(),
@@ -515,6 +523,7 @@ fn a_d_case_may_not_expect_escalation() {
         GroundTruth {
             class: Class::D,
             expected: ExpectedOutcome::Escalate,
+            expected_escalation_reason: Some(EscalationReason::SemanticUncertainty),
             true_safety: Safety::Safe,
             deciding_facts: vec![content_fact()],
             rationale: "contradictory by construction".to_string(),
@@ -532,6 +541,7 @@ fn a_d_case_requires_at_least_one_deciding_fact() {
         GroundTruth {
             class: Class::D,
             expected: ExpectedOutcome::Pass,
+            expected_escalation_reason: None,
             true_safety: Safety::Safe,
             deciding_facts: vec![],
             rationale: "no fact stated".to_string(),
@@ -569,4 +579,33 @@ fn a_case_round_trips_through_json_unchanged() {
         encoded,
         "corpus files must round-trip byte-identically"
     );
+}
+
+#[test]
+fn the_recipe_module_does_not_reach_into_the_engine() {
+    // A recipe is authored from a policy clause or a published specification.
+    // "Generate examples matching what EdgeGuard detects" is the failure the
+    // whole freeze mechanism exists to prevent, so the module that defines
+    // recipes must not be able to consult the engine at all.
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/recipe.rs"),
+    )
+    .expect("recipe module must be readable");
+    assert!(
+        !source.contains("edgeguard::"),
+        "src/recipe.rs must not reference engine types"
+    );
+    assert!(
+        !source.contains("use edgeguard"),
+        "src/recipe.rs must not import the engine"
+    );
+}
+
+#[test]
+fn no_synthetic_recipes_have_been_authored_yet() {
+    let recipes = edgeguard_routing_benchmark::recipe::load_dir(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes"),
+    )
+    .expect("an empty recipe directory is not an error");
+    assert_eq!(recipes.len(), 0);
 }

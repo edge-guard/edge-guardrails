@@ -20,7 +20,9 @@
 //! - [`policy_env`] - frozen, independently authored ACTION policy
 //!   environments. A case references one; a case never defines rules.
 //! - [`corpus`] - loading, coherence validation, and the leakage lints.
-//! - [`locks`] - classification, policy-environment, and holdout-burn freezes.
+//! - [`recipe`] - frozen synthetic construction recipes.
+//! - [`locks`] - classification, policy-environment, recipe, and holdout-burn
+//!   freezes, plus the verification chokepoint.
 //! - [`metrics`] - raw confusion counts, every rate, and the percentiles.
 //! - [`report`] - the reporting contract: aggregates are never emitted alone,
 //!   and a report cannot be built without a [`locks::FreezeAttestation`].
@@ -37,5 +39,6 @@ pub mod freeze;
 pub mod locks;
 pub mod metrics;
 pub mod policy_env;
+pub mod recipe;
 pub mod report;
 pub mod schema;

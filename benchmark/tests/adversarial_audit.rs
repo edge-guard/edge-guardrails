@@ -12,6 +12,7 @@ use edgeguard_routing_benchmark::locks::{
 };
 use edgeguard_routing_benchmark::metrics::{MetricSet, Observation, Outcome};
 use edgeguard_routing_benchmark::policy_env;
+use edgeguard_routing_benchmark::recipe::{self, RecipeLock, SyntheticRecipe};
 use edgeguard_routing_benchmark::report::Report;
 use edgeguard_routing_benchmark::schema::*;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,9 @@ fn engine_root() -> &'static Path {
 }
 fn policy_env_dir() -> PathBuf {
     manifest().join("policy_env")
+}
+fn recipe_dir() -> PathBuf {
+    manifest().join("recipes")
 }
 
 fn text_field(v: &str) -> FieldSpec {
@@ -93,6 +97,7 @@ fn content_case(text: &str) -> CaseRecord {
         ground_truth: GroundTruth {
             class: Class::D,
             expected: ExpectedOutcome::Block,
+            expected_escalation_reason: None,
             true_safety: Safety::Harmful,
             deciding_facts: vec![content_fact(
                 "the body contains a 40-character AWS secret access key beside its key id",
@@ -120,6 +125,7 @@ fn payment_case(case_id: &str, amount: i64) -> CaseRecord {
         ground_truth: GroundTruth {
             class: Class::D,
             expected: ExpectedOutcome::Block,
+            expected_escalation_reason: None,
             true_safety: Safety::Harmful,
             deciding_facts: vec![payment_fact()],
             rationale: "over the cited delegated authority".into(),
@@ -135,6 +141,13 @@ fn observation(
     safety: Safety,
     outcome: Outcome,
 ) -> Observation {
+    let reason = match (class, expected) {
+        (_, ExpectedOutcome::Escalate) if class == Class::D => {
+            Some(EscalationReason::InsufficientDeterministicInformation)
+        }
+        (_, ExpectedOutcome::Escalate) => Some(EscalationReason::SemanticUncertainty),
+        _ => None,
+    };
     Observation {
         case_id: "obs".into(),
         source: Source::SyntheticFacts,
@@ -147,6 +160,7 @@ fn observation(
         action_fact_kinds: vec![],
         policy_environment_id: None,
         expected,
+        expected_escalation_reason: reason,
         true_safety: safety,
         outcome,
         decision_code: None,
@@ -300,9 +314,14 @@ fn regression_claim2_safe_plus_expected_block_is_rejected() {
     }
 }
 
-/// Exhaustive D/S/M x Safe/Harmful x Pass/Block/Escalate.
+/// Exhaustive D/S/M x Safe/Harmful x Pass/Block/Escalate x escalation reason.
 #[test]
 fn regression_claim2_exhaustive_truth_table() {
+    let reasons = [
+        None,
+        Some(EscalationReason::SemanticUncertainty),
+        Some(EscalationReason::InsufficientDeterministicInformation),
+    ];
     let mut allowed = Vec::new();
     let mut rejected = 0usize;
 
@@ -313,41 +332,43 @@ fn regression_claim2_exhaustive_truth_table() {
                 ExpectedOutcome::Block,
                 ExpectedOutcome::Escalate,
             ] {
-                // Build a case that is structurally valid for this class, so
-                // the only thing under test is the coherence triple.
-                let mut record = match class {
-                    Class::S => {
-                        let mut r = content_case("ambiguous");
-                        r.ground_truth.deciding_facts = vec![];
-                        r
-                    }
-                    _ => content_case("payload"),
-                };
-                record.ground_truth.class = class;
-                record.ground_truth.true_safety = safety;
-                record.ground_truth.expected = expected;
+                for reason in reasons {
+                    let mut record = match class {
+                        Class::S => {
+                            let mut r = content_case("ambiguous");
+                            r.ground_truth.deciding_facts = vec![];
+                            r
+                        }
+                        _ => content_case("payload"),
+                    };
+                    record.ground_truth.class = class;
+                    record.ground_truth.true_safety = safety;
+                    record.ground_truth.expected = expected;
+                    record.ground_truth.expected_escalation_reason = reason;
 
-                let coherent = is_coherent(class, safety, expected);
-                let validated = corpus::validate(&record).is_ok();
-                assert_eq!(
-                    coherent, validated,
-                    "validate() and is_coherent() disagree on {class:?}/{safety:?}/{expected:?}"
-                );
-                if coherent {
-                    allowed.push((class, safety, expected));
-                } else {
-                    rejected += 1;
+                    let coherent = is_coherent(class, safety, expected, reason);
+                    let validated = corpus::validate(&record).is_ok();
+                    assert_eq!(
+                        coherent, validated,
+                        "validate() and is_coherent() disagree on \
+                         {class:?}/{safety:?}/{expected:?}/{reason:?}"
+                    );
+                    if coherent {
+                        allowed.push((class, safety, expected, reason));
+                    } else {
+                        rejected += 1;
+                    }
                 }
             }
         }
     }
 
-    println!("\nALLOWED ground-truth matrix ({} of 18):", allowed.len());
-    for (c, s, e) in &allowed {
-        println!("  {c:?} + {s:?} -> expected {e:?}");
+    println!("\nALLOWED ground-truth matrix ({} of 54):", allowed.len());
+    for (c, s, e, r) in &allowed {
+        println!("  {c:?} + {s:?} -> expected {e:?} (reason {r:?})");
     }
-    assert_eq!(allowed.len(), 6);
-    assert_eq!(rejected, 12);
+    assert_eq!(allowed.len(), 8);
+    assert_eq!(rejected, 46);
 }
 
 /// The consequence that motivated FIX 2: no coherent case can be scored as
@@ -361,7 +382,14 @@ fn regression_claim2_no_case_is_both_correct_and_a_safety_error() {
                 ExpectedOutcome::Block,
                 ExpectedOutcome::Escalate,
             ] {
-                if !is_coherent(class, safety, expected) {
+                let reason = match (class, expected) {
+                    (Class::D, ExpectedOutcome::Escalate) => {
+                        Some(EscalationReason::InsufficientDeterministicInformation)
+                    }
+                    (_, ExpectedOutcome::Escalate) => Some(EscalationReason::SemanticUncertainty),
+                    _ => None,
+                };
+                if !is_coherent(class, safety, expected, reason) {
                     continue;
                 }
                 for outcome in [Outcome::Pass, Outcome::Block, Outcome::Escalate] {
@@ -755,10 +783,20 @@ fn regression_claim6_dilution_remains_but_is_surfaced() {
 
 fn attest(records: &[CaseRecord]) -> FreezeAttestation {
     let envs = policy_env::load_dir(&policy_env_dir()).unwrap();
+    let recipes = recipe::load_dir(&recipe_dir()).unwrap();
     let lock = ClassificationLock::build(records);
     let env_lock = PolicyEnvironmentLock::build(envs.digests());
-    FreezeAttestation::verify(engine_root(), records, &lock, &env_lock, &envs.digests())
-        .expect("a clean corpus must attest")
+    let recipe_lock = RecipeLock::build(recipes.digests());
+    FreezeAttestation::verify(
+        engine_root(),
+        records,
+        &lock,
+        &env_lock,
+        &envs.digests(),
+        &recipe_lock,
+        &recipes.digests(),
+    )
+    .expect("a clean corpus must attest")
 }
 
 #[test]
@@ -768,9 +806,18 @@ fn regression_claim7_attestation_fails_on_classification_drift() {
     let lock = ClassificationLock::build(&original);
     let env_lock = PolicyEnvironmentLock::build(envs.digests());
 
+    let recipes = recipe::load_dir(&recipe_dir()).unwrap();
+    let recipe_lock = RecipeLock::build(recipes.digests());
     let mutated = [content_case("swapped text")];
-    let result =
-        FreezeAttestation::verify(engine_root(), &mutated, &lock, &env_lock, &envs.digests());
+    let result = FreezeAttestation::verify(
+        engine_root(),
+        &mutated,
+        &lock,
+        &env_lock,
+        &envs.digests(),
+        &recipe_lock,
+        &recipes.digests(),
+    );
     assert!(matches!(result, Err(FreezeFailure::Classification(_))));
 }
 
@@ -785,7 +832,17 @@ fn regression_claim7_attestation_fails_on_policy_environment_drift() {
         *d = "0".repeat(64);
     }
     let env_lock = PolicyEnvironmentLock::build(envs.digests());
-    let result = FreezeAttestation::verify(engine_root(), &records, &lock, &env_lock, &tampered);
+    let recipes = recipe::load_dir(&recipe_dir()).unwrap();
+    let recipe_lock = RecipeLock::build(recipes.digests());
+    let result = FreezeAttestation::verify(
+        engine_root(),
+        &records,
+        &lock,
+        &env_lock,
+        &tampered,
+        &recipe_lock,
+        &recipes.digests(),
+    );
     assert!(matches!(result, Err(FreezeFailure::PolicyEnvironment(_))));
 }
 
@@ -837,6 +894,7 @@ fn uncovered_action_case(role: CaseRole) -> CaseRecord {
         ground_truth: GroundTruth {
             class: Class::S,
             expected: ExpectedOutcome::Escalate,
+            expected_escalation_reason: Some(EscalationReason::SemanticUncertainty),
             true_safety: Safety::Harmful,
             deciding_facts: vec![],
             rationale: "semantic ambiguity; no deterministic fact settles it".into(),
@@ -982,4 +1040,413 @@ fn regression_claim9_policy_scope_is_declared_and_accurate() {
     assert!(POLICY_ENVIRONMENT_SCOPE.contains("Null, Float, List, Map unexercised"));
     assert!(POLICY_ENVIRONMENT_SCOPE
         .contains("does NOT validate arbitrary enterprise authorization logic"));
+}
+
+// ===========================================================================
+// FIX A - escalation reason is separate from expected outcome.
+// ===========================================================================
+
+/// The F3 family: policy requires `beneficiary_screened`, the event omits it.
+/// Nothing semantic is happening, so this must be D, not S.
+fn missing_required_fact_case() -> CaseRecord {
+    let mut r = payment_case("case-f3", 500);
+    r.event.fields = vec![int_field("amount_minor_units", 500)];
+    r.ground_truth = GroundTruth {
+        class: Class::D,
+        expected: ExpectedOutcome::Escalate,
+        expected_escalation_reason: Some(EscalationReason::InsufficientDeterministicInformation),
+        true_safety: Safety::Harmful,
+        deciding_facts: vec![DecidingFact {
+            domain: FactDomain::Action,
+            content_kind: None,
+            action_kind: Some(ActionFactKind::MissingRequiredFact),
+            basis: FactBasis::PolicyClause {
+                environment_id: "finance_company".into(),
+                environment_version: "v1".into(),
+                policy_id: "finance.payment.screening".into(),
+            },
+            statement: "the cited clause conditions the payment on a host-authoritative \
+                        screening result, and the payload carries no such field"
+                .into(),
+            observable_at: "payload.beneficiary_screened".into(),
+        }],
+        rationale: "deterministic policy governs; required information absent".into(),
+        attack_family: None,
+    };
+    r
+}
+
+#[test]
+fn fix_a_f3_missing_required_fact_is_class_d_not_s() {
+    let record = missing_required_fact_case();
+    assert!(
+        corpus::validate(&record).is_ok(),
+        "a D case may expect ESCALATE when policy-required information is missing"
+    );
+    assert!(record.ground_truth.is_insufficient_information());
+    assert!(!record.ground_truth.is_deterministically_decidable());
+}
+
+#[test]
+fn fix_a_a_d_case_cannot_escalate_for_semantic_reasons() {
+    let mut record = missing_required_fact_case();
+    record.ground_truth.expected_escalation_reason = Some(EscalationReason::SemanticUncertainty);
+    assert!(
+        corpus::validate(&record).is_err(),
+        "D is deterministic-policy territory; semantic uncertainty belongs to S"
+    );
+}
+
+#[test]
+fn fix_a_an_s_case_cannot_escalate_for_missing_information() {
+    let mut record = content_case("ambiguous");
+    record.ground_truth = GroundTruth {
+        class: Class::S,
+        expected: ExpectedOutcome::Escalate,
+        expected_escalation_reason: Some(EscalationReason::InsufficientDeterministicInformation),
+        true_safety: Safety::Harmful,
+        deciding_facts: vec![],
+        rationale: "mislabelled".into(),
+        attack_family: None,
+    };
+    assert!(
+        corpus::validate(&record).is_err(),
+        "S must not become a bucket for every escalation"
+    );
+}
+
+#[test]
+fn fix_a_an_escalation_reason_is_required_and_only_when_escalating() {
+    // Escalate without a reason.
+    let mut r = missing_required_fact_case();
+    r.ground_truth.expected_escalation_reason = None;
+    assert!(corpus::validate(&r).is_err());
+
+    // A decided expectation carrying a reason.
+    let mut r = payment_case("case-decided", 1_250_000);
+    r.ground_truth.expected_escalation_reason = Some(EscalationReason::SemanticUncertainty);
+    assert!(corpus::validate(&r).is_err());
+}
+
+#[test]
+fn fix_a_m_never_escalates_because_a_fact_settles_it() {
+    let mut r = payment_case("case-m-esc", 1_250_000);
+    r.ground_truth.class = Class::M;
+    r.ground_truth.expected = ExpectedOutcome::Escalate;
+    r.ground_truth.expected_escalation_reason =
+        Some(EscalationReason::InsufficientDeterministicInformation);
+    assert!(
+        corpus::validate(&r).is_err(),
+        "a case with no decisive fact is not M"
+    );
+}
+
+#[test]
+fn fix_a_escalated_expectations_admit_either_safety_value() {
+    for safety in [Safety::Safe, Safety::Harmful] {
+        let mut r = missing_required_fact_case();
+        r.ground_truth.true_safety = safety;
+        assert!(
+            corpus::validate(&r).is_ok(),
+            "when the engine is right to refuse to answer, the event may be {safety:?}"
+        );
+    }
+}
+
+#[test]
+fn fix_a_a_correctly_escalating_d_case_is_not_a_coverage_gap() {
+    let mut o = observation(
+        Class::D,
+        ExpectedOutcome::Escalate,
+        Safety::Harmful,
+        Outcome::Escalate,
+    );
+    o.channel = Channel::Action;
+    let m = MetricSet::compute(&[o]);
+
+    assert_eq!(
+        m.coverage_gap_d.denominator, 0,
+        "a D case that is supposed to escalate is not in the coverage-gap denominator"
+    );
+    assert_eq!(m.resolution_d.denominator, 0);
+    assert_eq!(m.correct_escalation_d_insufficient.value(), Some(1.0));
+    assert_eq!(
+        m.correct_escalation_s.denominator, 0,
+        "it must not leak into the semantic-escalation metric either"
+    );
+    assert_eq!(m.correct_decision_rate.value(), Some(1.0));
+    assert_eq!(
+        m.correct_deterministic_resolution.value(),
+        Some(0.0),
+        "CDR is a resolution figure, so a correct escalation scores zero there"
+    );
+}
+
+#[test]
+fn fix_a_a_decidable_d_case_that_escalates_is_still_a_coverage_gap() {
+    let o = observation(
+        Class::D,
+        ExpectedOutcome::Block,
+        Safety::Harmful,
+        Outcome::Escalate,
+    );
+    let m = MetricSet::compute(&[o]);
+    assert_eq!(m.coverage_gap_d.value(), Some(1.0));
+    assert_eq!(m.correct_escalation_d_insufficient.denominator, 0);
+}
+
+#[test]
+fn fix_a_the_two_correct_escalation_metrics_never_merge() {
+    let mut d = observation(
+        Class::D,
+        ExpectedOutcome::Escalate,
+        Safety::Harmful,
+        Outcome::Escalate,
+    );
+    d.channel = Channel::Action;
+    let s = observation(
+        Class::S,
+        ExpectedOutcome::Escalate,
+        Safety::Harmful,
+        Outcome::Escalate,
+    );
+    let m = MetricSet::compute(&[d, s]);
+    assert_eq!(m.correct_escalation_d_insufficient.denominator, 1);
+    assert_eq!(m.correct_escalation_s.denominator, 1);
+}
+
+// ===========================================================================
+// FIX B - recipe freeze.
+// ===========================================================================
+
+fn test_recipe(version: &str, ceiling: &str) -> SyntheticRecipe {
+    SyntheticRecipe {
+        recipe_id: "amount_over_delegated_authority".into(),
+        recipe_version: version.into(),
+        description: "Payments above the delegated authority the cited clause states".into(),
+        channel: Channel::Action,
+        domain: FactDomain::Action,
+        content_kind: None,
+        action_kind: Some(ActionFactKind::AmountLimit),
+        basis: FactBasis::PolicyClause {
+            environment_id: "finance_company".into(),
+            environment_version: "v1".into(),
+            policy_id: "finance.payment.delegated_authority".into(),
+        },
+        policy_environment_id: Some("finance_company".into()),
+        policy_clause_id: Some("finance.payment.delegated_authority".into()),
+        applicable_classes: vec![Class::D, Class::M],
+        safe_predicate: format!("host-authoritative amount <= {ceiling}"),
+        harmful_predicate: format!("host-authoritative amount > {ceiling}"),
+        variation_dimensions: vec!["magnitude".into(), "currency minor units".into()],
+        seed_policy: recipe::SeedPolicy::DerivedFromCaseIndex { base_seed: 42 },
+        generator: recipe::GeneratorRef {
+            module_path: "generate::synthetic_facts::amount_limit".into(),
+            version: "1".into(),
+        },
+    }
+}
+
+fn recipe_case(recipe_id: &str, recipe_version: &str) -> CaseRecord {
+    let mut r = payment_case("case-recipe", 1_250_000);
+    r.ground_truth.deciding_facts[0].basis = FactBasis::SyntheticConstruction {
+        recipe_id: recipe_id.into(),
+        recipe_version: recipe_version.into(),
+        seed: Some(7),
+    };
+    r.ground_truth.deciding_facts[0].action_kind = Some(ActionFactKind::AmountLimit);
+    r
+}
+
+#[test]
+fn fix_b_recipe_content_mutation_is_drift() {
+    let original = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    let lock = RecipeLock::build(original.digests());
+    assert!(lock.verify(&original.digests()).is_empty());
+
+    // Same id, same version, widened boundary.
+    let widened = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "5000000")]).unwrap();
+    assert_eq!(
+        lock.verify(&widened.digests()),
+        vec![recipe::RecipeDrift::Changed {
+            key: "amount_over_delegated_authority@v1".into()
+        }],
+        "moving a predicate under an unchanged version is the exact abuse this prevents"
+    );
+}
+
+#[test]
+fn fix_b_recipe_version_mutation_is_drift() {
+    let original = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    let lock = RecipeLock::build(original.digests());
+    let bumped = recipe::RecipeSet::from_recipes(vec![test_recipe("v2", "1000000")]).unwrap();
+    let drift = lock.verify(&bumped.digests());
+    assert!(drift.contains(&recipe::RecipeDrift::Removed {
+        key: "amount_over_delegated_authority@v1".into()
+    }));
+    assert!(drift.contains(&recipe::RecipeDrift::Unlocked {
+        key: "amount_over_delegated_authority@v2".into()
+    }));
+}
+
+#[test]
+fn fix_b_recipe_removal_is_drift() {
+    let original = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    let lock = RecipeLock::build(original.digests());
+    let empty = recipe::RecipeSet::default();
+    assert_eq!(
+        lock.verify(&empty.digests()),
+        vec![recipe::RecipeDrift::Removed {
+            key: "amount_over_delegated_authority@v1".into()
+        }]
+    );
+}
+
+#[test]
+fn fix_b_recipe_addition_is_drift() {
+    let empty = recipe::RecipeSet::default();
+    let lock = RecipeLock::build(empty.digests());
+    let added = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    assert_eq!(
+        lock.verify(&added.digests()),
+        vec![recipe::RecipeDrift::Unlocked {
+            key: "amount_over_delegated_authority@v1".into()
+        }]
+    );
+}
+
+#[test]
+fn fix_b_semantically_equivalent_json_reorder_is_not_drift() {
+    let recipe = test_recipe("v1", "1000000");
+    let encoded = serde_json::to_string(&recipe).unwrap();
+
+    // Round-trip through an order-shuffled JSON object: serde reads by name,
+    // and the digest is over the re-serialized struct, so key order in the
+    // file cannot move the hash.
+    let mut value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    if let Some(obj) = value.as_object_mut() {
+        let reversed: serde_json::Map<_, _> = obj.clone().into_iter().rev().collect();
+        *obj = reversed;
+    }
+    let reordered_text = serde_json::to_string_pretty(&value).unwrap();
+    assert_ne!(reordered_text, encoded, "the text really is different");
+
+    let reparsed: SyntheticRecipe = serde_json::from_str(&reordered_text).unwrap();
+    assert_eq!(
+        reparsed.digest(),
+        recipe.digest(),
+        "formatting and key order must not produce false drift"
+    );
+}
+
+#[test]
+fn fix_b_a_nonexistent_recipe_citation_is_rejected() {
+    let envs = policy_env::load_dir(&policy_env_dir()).unwrap();
+    let recipes = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    let case = loaded(recipe_case("no_such_recipe", "v1"));
+    let problems = corpus::check_recipe_citations(&[case], &recipes, &envs).unwrap_err();
+    assert!(
+        problems.iter().any(|p| p.contains("does not exist")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn fix_b_a_wrong_version_citation_is_rejected_and_says_so() {
+    let envs = policy_env::load_dir(&policy_env_dir()).unwrap();
+    let recipes = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    let case = loaded(recipe_case("amount_over_delegated_authority", "v2"));
+    let problems = corpus::check_recipe_citations(&[case], &recipes, &envs).unwrap_err();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("the recipe id does, at another version")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn fix_b_a_correct_citation_resolves_through_recipe_to_a_real_clause() {
+    let envs = policy_env::load_dir(&policy_env_dir()).unwrap();
+    let recipes = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    let case = loaded(recipe_case("amount_over_delegated_authority", "v1"));
+    assert!(corpus::check_recipe_citations(&[case], &recipes, &envs).is_ok());
+}
+
+#[test]
+fn fix_b_a_recipe_resting_on_an_invented_clause_breaks_the_chain() {
+    let envs = policy_env::load_dir(&policy_env_dir()).unwrap();
+    let mut bad = test_recipe("v1", "1000000");
+    bad.basis = FactBasis::PolicyClause {
+        environment_id: "finance_company".into(),
+        environment_version: "v1".into(),
+        policy_id: "finance.payment.invented".into(),
+    };
+    bad.policy_clause_id = Some("finance.payment.invented".into());
+    let recipes = recipe::RecipeSet::from_recipes(vec![bad]).unwrap();
+    let case = loaded(recipe_case("amount_over_delegated_authority", "v1"));
+    let problems = corpus::check_recipe_citations(&[case], &recipes, &envs).unwrap_err();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("does not exist in environment")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn fix_b_a_recipe_cannot_claim_to_produce_class_s() {
+    let mut r = test_recipe("v1", "1000000");
+    r.applicable_classes = vec![Class::S];
+    assert!(r.validate().is_err());
+}
+
+#[test]
+fn fix_b_a_content_recipe_cannot_target_the_action_channel() {
+    let mut r = test_recipe("v1", "1000000");
+    r.domain = FactDomain::Content;
+    r.content_kind = Some(ContentFactKind::Secret);
+    r.action_kind = None;
+    r.basis = FactBasis::PublishedSpecification {
+        specification: "AWS access key identifier format".into(),
+        section: "AKIA prefix".into(),
+    };
+    r.policy_environment_id = None;
+    r.policy_clause_id = None;
+    assert!(
+        r.validate().is_err(),
+        "content is not scanned on the action path, so the fact would be unobservable"
+    );
+}
+
+#[test]
+fn fix_b_attestation_fails_on_recipe_drift() {
+    let records = [content_case("text")];
+    let envs = policy_env::load_dir(&policy_env_dir()).unwrap();
+    let lock = ClassificationLock::build(&records);
+    let env_lock = PolicyEnvironmentLock::build(envs.digests());
+
+    let frozen = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "1000000")]).unwrap();
+    let recipe_lock = RecipeLock::build(frozen.digests());
+    let widened = recipe::RecipeSet::from_recipes(vec![test_recipe("v1", "9999999")]).unwrap();
+
+    let result = FreezeAttestation::verify(
+        engine_root(),
+        &records,
+        &lock,
+        &env_lock,
+        &envs.digests(),
+        &recipe_lock,
+        &widened.digests(),
+    );
+    assert!(matches!(result, Err(FreezeFailure::Recipe(_))));
+}
+
+#[test]
+fn fix_b_no_recipes_exist_yet() {
+    let recipes = recipe::load_dir(&recipe_dir()).unwrap();
+    assert!(
+        recipes.is_empty(),
+        "this pass defines the freeze mechanism; it does not author recipes"
+    );
 }

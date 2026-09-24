@@ -1,6 +1,7 @@
 //! Corpus loading, validation, and the leakage lints.
 
 use crate::policy_env::{EnvironmentUsage, PolicyEnvironmentSet};
+use crate::recipe::RecipeSet;
 use crate::schema::{
     build_event, CaseRecord, CaseRole, CaseShape, Channel, Class, Source, UsageClass,
 };
@@ -184,22 +185,26 @@ pub fn validate(record: &CaseRecord) -> Result<(), String> {
         }
     }
 
-    // The full (class, true_safety, expected) truth table - see
-    // `schema::is_coherent` for the matrix and why only six of eighteen
-    // combinations are admissible.
+    // The full (class, true_safety, expected, escalation reason) truth table -
+    // see `schema::is_coherent` for the matrix and why only eight of
+    // fifty-four combinations are admissible.
     if !crate::schema::is_coherent(
         record.ground_truth.class,
         record.ground_truth.true_safety,
         record.ground_truth.expected,
+        record.ground_truth.expected_escalation_reason,
     ) {
         return Err(format!(
-            "incoherent ground truth: class {:?} with true_safety {:?} cannot expect {:?}. \
-             For D and M, expected Block <=> Harmful and expected Pass <=> Safe; S always \
-             expects Escalate. A contradictory pair would let one event count as both a \
-             correct deterministic decision and a safety error.",
+            "incoherent ground truth: class {:?} / true_safety {:?} / expected {:?} / \
+             escalation reason {:?}. For D and M a decided expectation pairs exactly \
+             (Block <=> Harmful, Pass <=> Safe) and carries no escalation reason. An \
+             escalated expectation requires a reason: D escalates only for \
+             InsufficientDeterministicInformation, S only for SemanticUncertainty, and M \
+             never escalates because a deciding fact settles it.",
             record.ground_truth.class,
             record.ground_truth.true_safety,
-            record.ground_truth.expected
+            record.ground_truth.expected,
+            record.ground_truth.expected_escalation_reason
         ));
     }
 
@@ -547,4 +552,130 @@ pub fn normalized_text(record: &CaseRecord) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Resolve every synthetic-recipe citation, and the clause chain behind it.
+///
+/// A case that cites `SyntheticConstruction { recipe_id, recipe_version }` must
+/// name a recipe that exists **at that version**, whose declared domain and
+/// kind match the fact, and - for an Action fact - whose own basis is a policy
+/// clause that exists in the environment the case is evaluated under.
+///
+/// That chain is what stops a synthetic action case from asserting authority it
+/// does not have: case -> frozen recipe -> frozen clause -> frozen environment,
+/// every link checkable, none of them engine behaviour.
+pub fn check_recipe_citations(
+    cases: &[LoadedCase],
+    recipes: &RecipeSet,
+    environments: &PolicyEnvironmentSet,
+) -> Result<(), Vec<String>> {
+    let mut problems = Vec::new();
+
+    for case in cases {
+        for fact in &case.record.ground_truth.deciding_facts {
+            let crate::schema::FactBasis::SyntheticConstruction {
+                recipe_id,
+                recipe_version,
+                ..
+            } = &fact.basis
+            else {
+                continue;
+            };
+
+            let Some(recipe) = recipes.get(recipe_id, recipe_version) else {
+                problems.push(if recipes.contains_id(recipe_id) {
+                    format!(
+                        "case {:?} cites recipe {recipe_id:?} version {recipe_version:?}, which \
+                         does not exist; the recipe id does, at another version",
+                        case.record.case_id
+                    )
+                } else {
+                    format!(
+                        "case {:?} cites recipe {recipe_id:?}, which does not exist",
+                        case.record.case_id
+                    )
+                });
+                continue;
+            };
+
+            if recipe.domain != fact.domain {
+                problems.push(format!(
+                    "case {:?} cites recipe {recipe_id:?} ({:?} domain) for a {:?}-domain fact",
+                    case.record.case_id, recipe.domain, fact.domain
+                ));
+                continue;
+            }
+            if recipe.content_kind != fact.content_kind || recipe.action_kind != fact.action_kind {
+                problems.push(format!(
+                    "case {:?} cites recipe {recipe_id:?}, whose fact kind does not match the \
+                     fact it is cited for",
+                    case.record.case_id
+                ));
+                continue;
+            }
+            if !recipe
+                .applicable_classes
+                .contains(&case.record.ground_truth.class)
+            {
+                problems.push(format!(
+                    "case {:?} is class {:?}, which recipe {recipe_id:?} does not declare itself \
+                     able to produce",
+                    case.record.case_id, case.record.ground_truth.class
+                ));
+                continue;
+            }
+
+            // Action facts must reach a real clause through the recipe.
+            if fact.domain == crate::schema::FactDomain::Action {
+                let crate::schema::FactBasis::PolicyClause {
+                    environment_id,
+                    environment_version,
+                    policy_id,
+                } = &recipe.basis
+                else {
+                    problems.push(format!(
+                        "case {:?} cites recipe {recipe_id:?} for an Action fact, but that \
+                         recipe does not rest on a policy clause",
+                        case.record.case_id
+                    ));
+                    continue;
+                };
+                let Some(case_env) = &case.record.policy_environment_id else {
+                    continue; // already reported by validate()
+                };
+                if environment_id != case_env {
+                    problems.push(format!(
+                        "case {:?} is evaluated under environment {case_env:?} but cites recipe \
+                         {recipe_id:?}, which rests on {environment_id:?}",
+                        case.record.case_id
+                    ));
+                    continue;
+                }
+                let Some(env) = environments.get(case_env) else {
+                    continue; // already reported by check_environment_coverage
+                };
+                if environment_version != &env.version {
+                    problems.push(format!(
+                        "case {:?} cites recipe {recipe_id:?}, which rests on environment version \
+                         {environment_version:?}, but the frozen environment is {:?}",
+                        case.record.case_id, env.version
+                    ));
+                    continue;
+                }
+                if !env.rules.iter().any(|r| &r.policy_id == policy_id) {
+                    problems.push(format!(
+                        "case {:?} cites recipe {recipe_id:?}, which rests on clause \
+                         {policy_id:?}, which does not exist in environment {case_env:?}",
+                        case.record.case_id
+                    ));
+                }
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
 }

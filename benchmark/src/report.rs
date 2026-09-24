@@ -93,7 +93,8 @@ impl Report {
     /// behaviour yields wildly different CDRs on different mixes.
     pub fn cdr_statement(&self) -> String {
         let cdr = &self.aggregate.correct_deterministic_resolution;
-        let mut out = format!(
+        let mut out = String::new();
+        out.push_str(&format!(
             "Correct Deterministic Resolution = {}/{} ({})\n",
             cdr.numerator,
             cdr.denominator,
@@ -101,7 +102,7 @@ impl Report {
                 Some(v) => format!("{v:.4}"),
                 None => "not measured".to_string(),
             }
-        );
+        ));
         out.push_str(
             "  corpus composition (CDR is a function of this mix as much as of the engine):\n",
         );
@@ -123,6 +124,15 @@ impl Report {
              \x20 engine behaviour can differ by tens of points. Compare CDR only within one\n\
              \x20 corpus, and read it beside the per-class slices below.\n",
         );
+        out.push_str(&format!(
+            "  correct escalations, by why escalation was right:\n    \
+             D / information policy requires was absent: {}/{}\n    \
+             S / meaning was in question:               {}/{}\n",
+            self.aggregate.correct_escalation_d_insufficient.numerator,
+            self.aggregate.correct_escalation_d_insufficient.denominator,
+            self.aggregate.correct_escalation_s.numerator,
+            self.aggregate.correct_escalation_s.denominator
+        ));
         for (class, m) in &self.by_class {
             out.push_str(&format!(
                 "    class {class:?}: n={} resolution={:?} accuracy={:?}\n",

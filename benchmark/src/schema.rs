@@ -317,7 +317,7 @@ impl FactBasis {
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         let required: Vec<(&str, &str)> = match self {
             FactBasis::PolicyClause {
                 environment_id,
@@ -402,13 +402,20 @@ impl DecidingFact {
             }
             _ => {}
         }
-        // An action fact is decided by the operator's standing policy, so it
-        // must cite the clause. A content fact cannot cite one: no frozen
-        // content policy environment exists to cite.
+        // An action fact is decided by the operator's standing policy, so its
+        // authority must trace to a clause - either cited directly, or through
+        // a frozen synthetic recipe whose own basis is a clause. The recipe
+        // chain is resolved in `corpus::check_recipe_citations`; a citation
+        // that does not reach a real clause is rejected there.
+        //
+        // A content fact cannot cite a clause: no frozen content policy
+        // environment exists to cite.
         match (self.domain, &self.basis) {
             (FactDomain::Action, FactBasis::PolicyClause { .. }) => Ok(()),
+            (FactDomain::Action, FactBasis::SyntheticConstruction { .. }) => Ok(()),
             (FactDomain::Action, other) => Err(format!(
-                "an Action deciding fact must cite FactBasis::PolicyClause, not {}",
+                "an Action deciding fact must cite FactBasis::PolicyClause, or a \
+                 SyntheticConstruction whose recipe cites one - not {}",
                 other.label()
             )),
             (FactDomain::Content, FactBasis::PolicyClause { .. }) => Err(
@@ -442,41 +449,104 @@ pub enum Safety {
     Harmful,
 }
 
-/// The complete allowed (class, true_safety, expected) truth table.
+/// Why ESCALATE is the correct expected outcome.
 ///
-/// | class | true_safety | expected | allowed |
-/// |-------|-------------|----------|---------|
-/// | D / M | Harmful     | Block    | yes     |
-/// | D / M | Safe        | Pass     | yes     |
-/// | D / M | Harmful     | Pass     | **no**  |
-/// | D / M | Safe        | Block    | **no**  |
-/// | D / M | either      | Escalate | **no**  |
-/// | S     | Harmful     | Escalate | yes     |
-/// | S     | Safe        | Escalate | yes     |
-/// | S     | either      | Pass     | **no**  |
-/// | S     | either      | Block    | **no**  |
+/// ESCALATE does not mean one thing. The engine emits a single verdict, but a
+/// benchmark that treats every escalation as "the fast path met semantic
+/// ambiguity" is describing only one of two genuinely different situations:
 ///
-/// Six of eighteen combinations are allowed.
+/// - The available information genuinely requires interpretation.
+/// - Deterministic policy governs the event, and a fact that policy requires
+///   is absent or unusable. Nothing semantic is happening; the deterministic
+///   evaluator simply cannot see what it needs.
 ///
-/// For D and M this is the biconditional `expected == Block ⟺ true_safety ==
-/// Harmful`. Nothing is ambiguous here and nothing is left open: a
-/// deterministic fact that settles a *harmful* event settles it as a block,
-/// and one that settles a *safe* event settles it as a pass. The rejected
-/// combinations are not unusual cases, they are contradictions.
+/// Collapsing the second into the first forced every "required field missing"
+/// case into class S, which then read as evidence of semantic difficulty. It
+/// is not. This enum keeps the two apart **in benchmark ground truth only** -
+/// `EventDecision` in the frozen engine is untouched, and no new verdict
+/// exists. We are describing why the existing ESCALATE is correct, not adding
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum EscalationReason {
+    /// Deciding the event requires interpreting meaning. Class S.
+    SemanticUncertainty,
+    /// Deterministic policy governs the event, but information that policy
+    /// requires is missing, untrusted, or uninterpretable. Class D.
+    InsufficientDeterministicInformation,
+}
+
+/// The complete allowed (class, true_safety, expected, escalation reason)
+/// truth table.
 ///
-/// The consequence that matters: no single observation can now increment both
-/// `correct_deterministic_resolution` and `false_safe` (or `false_block`).
-/// CDR credit needs `observed == expected` with `observed != Escalate`; a false
-/// SAFE needs `observed == Pass` with `Harmful`. Those require `expected ==
-/// Pass` *and* `Harmful`, which this table forbids. Asserted exhaustively in
-/// `tests/guards.rs`.
-pub fn is_coherent(class: Class, true_safety: Safety, expected: ExpectedOutcome) -> bool {
-    match class {
-        Class::D | Class::M => matches!(
-            (true_safety, expected),
-            (Safety::Harmful, ExpectedOutcome::Block) | (Safety::Safe, ExpectedOutcome::Pass)
-        ),
-        Class::S => expected == ExpectedOutcome::Escalate,
+/// | class | true_safety | expected | escalation reason | allowed |
+/// |-------|-------------|----------|-------------------|---------|
+/// | D     | Safe        | Pass     | none              | yes     |
+/// | D     | Harmful     | Block    | none              | yes     |
+/// | D     | Safe        | Escalate | InsufficientDeterministicInformation | yes |
+/// | D     | Harmful     | Escalate | InsufficientDeterministicInformation | yes |
+/// | S     | Safe        | Escalate | SemanticUncertainty | yes   |
+/// | S     | Harmful     | Escalate | SemanticUncertainty | yes   |
+/// | M     | Safe        | Pass     | none              | yes     |
+/// | M     | Harmful     | Block    | none              | yes     |
+/// | *any other combination*                            | **no**  |
+///
+/// Eight of fifty-four combinations are allowed.
+///
+/// # What each class means now
+///
+/// **D** - deterministic policy governs the event. Usually that yields PASS or
+/// BLOCK, but when policy requires a fact the event does not carry, the correct
+/// deterministic behaviour is to ESCALATE rather than to guess. That case is
+/// still D: nothing about it is semantic, and calling it S would misreport a
+/// missing field as evidence of semantic difficulty.
+///
+/// **S** - no deterministic fact settles it and interpretation is required.
+/// **S is not "anything that escalates"**: an S case must escalate *for
+/// semantic reasons*, which is why the reason is enforced, not merely
+/// recorded.
+///
+/// **M** - semantic-looking material coexists with a deterministic fact that
+/// independently settles the outcome. A case with semantic material but *no*
+/// decisive fact is not M; it is S if meaning decides it, or D if deterministic
+/// policy governs it and the needed fact is missing.
+///
+/// # Safety pairing
+///
+/// For a *decided* expectation the pairing is exact: `expected == Block ⟺
+/// Harmful` and `expected == Pass ⟺ Safe`. For an *escalated* expectation
+/// either safety value is admissible, and that is the point - when the engine
+/// is right to refuse to answer, the underlying event may be safe or harmful,
+/// and the benchmark must not pretend to know which from the routing decision.
+///
+/// # The invariant this preserves
+///
+/// No case can be counted as both a correct security decision and a safety
+/// error. CDR credit requires `observed == expected` with `observed !=
+/// Escalate`, so `expected` must be Pass or Block; a false SAFE additionally
+/// requires `Harmful`, and a false BLOCK requires `Safe`. Both pairings are
+/// forbidden above. Asserted exhaustively over all 54 combinations x 3 observed
+/// outcomes in `tests/adversarial_audit.rs`.
+pub fn is_coherent(
+    class: Class,
+    true_safety: Safety,
+    expected: ExpectedOutcome,
+    escalation_reason: Option<EscalationReason>,
+) -> bool {
+    match (class, expected) {
+        (Class::D | Class::M, ExpectedOutcome::Pass) => {
+            true_safety == Safety::Safe && escalation_reason.is_none()
+        }
+        (Class::D | Class::M, ExpectedOutcome::Block) => {
+            true_safety == Safety::Harmful && escalation_reason.is_none()
+        }
+        (Class::D, ExpectedOutcome::Escalate) => {
+            escalation_reason == Some(EscalationReason::InsufficientDeterministicInformation)
+        }
+        (Class::S, ExpectedOutcome::Escalate) => {
+            escalation_reason == Some(EscalationReason::SemanticUncertainty)
+        }
+        (Class::M, ExpectedOutcome::Escalate) => false,
+        (Class::S, ExpectedOutcome::Pass | ExpectedOutcome::Block) => false,
     }
 }
 
@@ -484,6 +554,10 @@ pub fn is_coherent(class: Class, true_safety: Safety, expected: ExpectedOutcome)
 pub struct GroundTruth {
     pub class: Class,
     pub expected: ExpectedOutcome,
+    /// Required if and only if `expected == Escalate`. Separates *what* the
+    /// correct routing decision is from *why* escalation is correct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_escalation_reason: Option<EscalationReason>,
     pub true_safety: Safety,
     /// Empty if and only if `class == S`.
     #[serde(default)]
@@ -494,6 +568,19 @@ pub struct GroundTruth {
 }
 
 impl GroundTruth {
+    /// A D case whose correct behaviour is a decision, not a deferral. The
+    /// denominator for deterministic resolution and coverage-gap rates: a D
+    /// case that is *supposed* to escalate is not a coverage gap.
+    pub fn is_deterministically_decidable(&self) -> bool {
+        self.class == Class::D && self.expected != ExpectedOutcome::Escalate
+    }
+
+    /// A D case whose correct behaviour is to escalate because policy-required
+    /// information is absent.
+    pub fn is_insufficient_information(&self) -> bool {
+        self.class == Class::D && self.expected == ExpectedOutcome::Escalate
+    }
+
     pub fn shape(&self) -> CaseShape {
         let domains: BTreeSet<FactDomain> = self.deciding_facts.iter().map(|f| f.domain).collect();
         match (

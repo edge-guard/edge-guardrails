@@ -103,34 +103,92 @@ action events is a **C** item.
 content is a correct deferral, not a miss.
 
 Separate does not mean unconstrained. `schema::is_coherent` enforces the full
-truth table, and `corpus::validate` rejects anything outside it:
+truth table, and `corpus::validate` rejects anything outside it.
 
-| class | true_safety | expected | allowed |
-|-------|-------------|----------|---------|
-| D / M | Harmful     | Block    | yes     |
-| D / M | Safe        | Pass     | yes     |
-| D / M | Harmful     | Pass     | **no**  |
-| D / M | Safe        | Block    | **no**  |
-| D / M | either      | Escalate | **no**  |
-| S     | Harmful     | Escalate | yes     |
-| S     | Safe        | Escalate | yes     |
-| S     | either      | Pass     | **no**  |
-| S     | either      | Block    | **no**  |
+### Why ESCALATE needed a reason
 
-Six of eighteen combinations are admissible. For D and M this is the
-biconditional `expected == Block ⟺ true_safety == Harmful`: a deterministic
-fact that settles a harmful event settles it as a block, and one that settles a
-safe event settles it as a pass. The rejected rows are contradictions, not
-unusual cases, so nothing is left ambiguous or open.
+ESCALATE does not mean one thing. The engine emits a single verdict, but a
+benchmark that reads every escalation as "the fast path met semantic ambiguity"
+is describing only one of two genuinely different situations:
 
-**Why this matters.** `Harmful` + `expected Pass` was previously accepted, and
-an observed PASS on such a case incremented *both* `correct_deterministic_
-resolution` and `false_safe` - the same event scored as a fully correct
-decision and as a safety failure. The table makes that unreachable: CDR credit
-needs `observed == expected != Escalate`, a false SAFE needs `observed == Pass`
-with `Harmful`, and those jointly require the forbidden `expected Pass` +
-`Harmful` pair. Asserted exhaustively over all 18 combinations × 3 observed
-outcomes in `tests/adversarial_audit.rs`.
+| `EscalationReason` | Meaning | Class |
+|---|---|---|
+| `SemanticUncertainty` | Deciding the event requires interpreting meaning | **S** |
+| `InsufficientDeterministicInformation` | Deterministic policy governs the event, but a fact that policy requires is absent, untrusted, or uninterpretable | **D** |
+
+The previous table forced the second case into S purely because its expected
+outcome was ESCALATE. A payment missing its required screening flag is not a
+semantic problem — the deterministic evaluator simply cannot see what policy
+asks for — and filing it as S reported a missing field as evidence of semantic
+difficulty.
+
+`expected` (what the correct routing decision is) and
+`expected_escalation_reason` (why escalation is correct) are now separate
+fields. **`EventDecision` in the frozen engine is untouched; no new verdict
+exists.** We are describing why the existing ESCALATE is right.
+
+### The allowed matrix — 8 of 54
+
+| class | true_safety | expected | escalation reason | allowed |
+|-------|-------------|----------|-------------------|---------|
+| D | Safe | Pass | none | yes |
+| D | Harmful | Block | none | yes |
+| D | Safe | Escalate | `InsufficientDeterministicInformation` | yes |
+| D | Harmful | Escalate | `InsufficientDeterministicInformation` | yes |
+| S | Safe | Escalate | `SemanticUncertainty` | yes |
+| S | Harmful | Escalate | `SemanticUncertainty` | yes |
+| M | Safe | Pass | none | yes |
+| M | Harmful | Block | none | yes |
+| *every other combination* | | | | **no** |
+
+**What each class means now.**
+
+- **D** — deterministic policy governs the event. Usually PASS or BLOCK, but
+  when policy requires a fact the event does not carry, the correct
+  deterministic behaviour is to escalate rather than guess. Still D.
+- **S** — no deterministic fact settles it; interpretation is required. **S is
+  not "anything that escalates":** an S case must escalate *for semantic
+  reasons*, and the reason is enforced, not merely recorded.
+- **M** — semantic-looking material coexists with a deterministic fact that
+  independently settles the outcome. **M never escalates**: if no fact settles
+  it, the case is S (if meaning decides) or D (if policy governs and the needed
+  fact is missing).
+
+For a *decided* expectation the safety pairing is exact — `Block ⟺ Harmful`,
+`Pass ⟺ Safe`. For an *escalated* expectation **either safety value is
+admissible**, and that is the point: when the engine is right to refuse to
+answer, the underlying event may be safe or harmful, and the benchmark must not
+pretend to know which from the routing decision.
+
+### F3 and M5, resolved
+
+- **F3 "required deterministic fact missing"** → class **D**, expected
+  ESCALATE, reason `InsufficientDeterministicInformation`, either safety. The
+  deciding fact cites the clause that *requires* the absent information, so the
+  case stays grounded in policy rather than in a feeling of uncertainty.
+- **M5 "benign prose, missing required fact"** → class **D**, same shape. It is
+  not M, because M requires an independently decisive fact and M5 has none; the
+  benign prose is incidental. Previously this was forced to S.
+
+### Metric consequences
+
+A D case that is *supposed* to escalate must not be scored as a failure to
+resolve. `resolution_d`, `accuracy_d` and `coverage_gap_d` are therefore
+computed over **D-decidable** cases only (`expected != Escalate`), and
+`correct_escalation_d_insufficient` covers the rest. It is deliberately kept
+separate from `correct_escalation_s`: both are correct escalations, but merging
+them would reintroduce the conflation this split removes.
+
+CDR structurally scores a correct escalation as zero, because it is a
+*resolution* figure. `correct_decision_rate` (`observed == expected`, all three
+outcomes) is reported beside it so correct escalation is visible. It is **not**
+a coverage figure and must never be quoted as one.
+
+**The invariant still holds:** no case can be counted as both a correct
+security decision and a safety error. CDR credit needs `observed == expected`
+with `observed != Escalate`, so `expected` must be Pass or Block; a false SAFE
+additionally needs `Harmful` and a false BLOCK needs `Safe`, and both pairings
+are forbidden above. Asserted over all 54 combinations × 3 observed outcomes.
 
 ## 1.4 Deciding facts must cite an implementation-independent basis
 
@@ -295,6 +353,47 @@ must be class S, must name an action the environment does **not** cover, and is:
 An environment referenced *only* by probes still gets a breadth entry, so it
 reports a shortfall of zero primary cases rather than escaping assessment.
 Engine behaviour is untouched: unknown actions still escalate, by design.
+
+## 2.2 Frozen synthetic recipes
+
+The same argument as §2.1, one level down. Write a recipe, generate cases, look
+at the results, quietly widen a boundary, regenerate — and nothing in the corpus
+records that the second batch came from a different rule. The benchmark would
+have been tuned against its own subject without anyone editing the engine.
+
+`recipe::SyntheticRecipe` is therefore versioned, canonically digested and
+locked before any case is instantiated:
+
+```rust
+SyntheticRecipe {
+  recipe_id, recipe_version, description,
+  channel, domain, content_kind?, action_kind?,
+  basis,                              // the independent authority
+  policy_environment_id?, policy_clause_id?,
+  applicable_classes,                 // never S
+  safe_predicate, harmful_predicate,  // written down BEFORE generation
+  variation_dimensions, seed_policy, generator,
+}
+```
+
+`RecipeLock` mirrors `PolicyEnvironmentLock`: mutation, removal and addition are
+all drift, while JSON key order and formatting are not. `FreezeAttestation`
+verifies it alongside the engine, the classification lock and the environments.
+
+**The citation chain.** A synthetic case cites
+`FactBasis::SyntheticConstruction { recipe_id, recipe_version, seed }`;
+`corpus::check_recipe_citations` resolves it to a recipe **at that version**,
+checks the declared domain, kind and class match, and — for an Action fact —
+follows the recipe's own `PolicyClause` basis to a clause that exists in the
+environment the case is evaluated under. Case → recipe → clause → environment,
+every link checkable, none of them engine behaviour.
+
+Constraints that fall out of the frozen engine's actual boundary: a recipe
+cannot produce class S (an S case has no deciding fact to construct); a content
+recipe cannot cite a policy clause (no frozen content policy exists) and cannot
+target channel `Action` (content is not scanned on the action path, so the fact
+would be unobservable). `tests/guards.rs` asserts `src/recipe.rs` never
+references the engine.
 
 ---
 
@@ -475,6 +574,20 @@ cell** (`P99_MIN_SAMPLES`) rather than printed as noise.
    `principal_id`.
 3. **Load-time.** A failing line is a hard error, not a warning.
 
+## 5.1a Classification is per case, never per dataset
+
+A dataset's origin is **not** a classification. An external prompt-injection
+corpus will be predominantly class S, but if a particular case carries an
+independently justified deciding fact — a live credential in the injected text,
+a value conforming to a published format — that case is D or M, and filing it as
+S because of where it came from would misreport the corpus.
+
+The rule follows from the schema rather than from discipline: class is
+determined by whether a `DecidingFact` with a valid `FactBasis` exists, which is
+a property of the case. `corpus::validate` enforces the pairing (S must carry no
+deciding fact; D and M must carry at least one). Bulk-assigning a class at
+import time is therefore not expressible.
+
 ## 5.2 DEVELOPMENT_ONLY
 
 `UsageClass::DevelopmentOnly` marks material previously used for rule or
@@ -651,6 +764,18 @@ diagnose any failure without re-running and without touching the frozen engine.
   §4.6 forces the framing; it does not change the arithmetic. A reader who
   quotes one number out of a `Report` can still mislead, and the regression
   suite asserts the hazard still exists so nobody records it as fixed.
+- **W19 — Three of the four `FactBasis` variants remain attributions**, and the
+  recipe chain does not change that: it verifies that an Action recipe reaches a
+  real clause, but a content recipe's `PublishedSpecification` is still only as
+  good as the author's reading of the spec.
+- **W20 — `correct_decision_rate` is a new number that can be quoted alone.**
+  It exists because CDR under-reports once D cases may legitimately escalate,
+  but it is more flattering than CDR and the report must keep them adjacent.
+- **W21 — The recipe freeze cannot stop a new recipe version.** Bumping
+  `recipe_version` is legitimate and is *supposed* to be possible; what the lock
+  guarantees is that the old and new generations stay distinguishable in the
+  corpus, not that no one widens a boundary. A reviewer must still ask why a
+  version was bumped.
 - **W18 — `MetricSet::compute` is still reachable without an attestation.**
   The chokepoint covers `Report`, not every metric call (§5.4). A future runner
   could compute and print metrics without verifying anything; the invariant is

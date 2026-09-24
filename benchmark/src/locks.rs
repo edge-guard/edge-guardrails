@@ -51,6 +51,7 @@ fn hex(bytes: &[u8]) -> String {
 struct ClassificationSubject<'a> {
     class: &'a crate::schema::Class,
     expected: &'a crate::schema::ExpectedOutcome,
+    expected_escalation_reason: &'a Option<crate::schema::EscalationReason>,
     true_safety: &'a crate::schema::Safety,
     deciding_facts: &'a [crate::schema::DecidingFact],
     policy_environment_id: &'a Option<String>,
@@ -63,6 +64,7 @@ pub fn classification_digest(record: &CaseRecord) -> String {
     digest_of(&ClassificationSubject {
         class: &record.ground_truth.class,
         expected: &record.ground_truth.expected,
+        expected_escalation_reason: &record.ground_truth.expected_escalation_reason,
         true_safety: &record.ground_truth.true_safety,
         deciding_facts: &record.ground_truth.deciding_facts,
         policy_environment_id: &record.policy_environment_id,
@@ -176,6 +178,7 @@ pub enum FreezeFailure {
     Engine(Vec<crate::freeze::DriftedFile>),
     Classification(Vec<ClassificationDrift>),
     PolicyEnvironment(Vec<PolicyEnvironmentDrift>),
+    Recipe(Vec<crate::recipe::RecipeDrift>),
     EngineUnreadable(String),
 }
 
@@ -200,6 +203,7 @@ pub struct FreezeAttestation {
     engine_commit: String,
     case_count: usize,
     environment_digests: BTreeMap<String, String>,
+    recipe_digests: BTreeMap<String, String>,
 }
 
 impl FreezeAttestation {
@@ -210,6 +214,8 @@ impl FreezeAttestation {
         classification: &ClassificationLock,
         environments: &PolicyEnvironmentLock,
         environment_digests: &BTreeMap<String, String>,
+        recipes: &crate::recipe::RecipeLock,
+        recipe_digests: &BTreeMap<String, String>,
     ) -> Result<Self, FreezeFailure> {
         let drifted = crate::freeze::verify(engine_root)
             .map_err(|e| FreezeFailure::EngineUnreadable(e.to_string()))?;
@@ -224,10 +230,15 @@ impl FreezeAttestation {
         if !env_drift.is_empty() {
             return Err(FreezeFailure::PolicyEnvironment(env_drift));
         }
+        let recipe_drift = recipes.verify(recipe_digests);
+        if !recipe_drift.is_empty() {
+            return Err(FreezeFailure::Recipe(recipe_drift));
+        }
         Ok(Self {
             engine_commit: crate::freeze::FROZEN_COMMIT.to_string(),
             case_count: records.len(),
             environment_digests: environment_digests.clone(),
+            recipe_digests: recipe_digests.clone(),
         })
     }
 
@@ -241,6 +252,10 @@ impl FreezeAttestation {
 
     pub fn environment_digests(&self) -> &BTreeMap<String, String> {
         &self.environment_digests
+    }
+
+    pub fn recipe_digests(&self) -> &BTreeMap<String, String> {
+        &self.recipe_digests
     }
 }
 

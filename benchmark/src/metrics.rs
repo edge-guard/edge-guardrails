@@ -9,8 +9,8 @@
 //! picked the denominator; the counts do not.
 
 use crate::schema::{
-    ActionFactKind, CaseRole, CaseShape, Channel, Class, ContentFactKind, ExpectedOutcome, Safety,
-    Source, UsageClass,
+    ActionFactKind, CaseRole, CaseShape, Channel, Class, ContentFactKind, EscalationReason,
+    ExpectedOutcome, Safety, Source, UsageClass,
 };
 use edgeguard::event::EventDecision;
 use serde::{Deserialize, Serialize};
@@ -57,6 +57,10 @@ pub struct Observation {
     pub action_fact_kinds: Vec<ActionFactKind>,
     pub policy_environment_id: Option<String>,
     pub expected: ExpectedOutcome,
+    /// Present iff `expected == Escalate`. Distinguishes a D case that must
+    /// escalate because policy-required information is missing from an S case
+    /// that must escalate because meaning is in question.
+    pub expected_escalation_reason: Option<EscalationReason>,
     pub true_safety: Safety,
     pub outcome: Outcome,
     /// `Block` code, or the `EG_*` prefix of an `Escalate` reason. `None` for
@@ -73,6 +77,20 @@ impl Observation {
     /// Whether this observation contributes to the primary benchmark metrics.
     pub fn is_primary(&self) -> bool {
         self.role == CaseRole::Primary
+    }
+
+    /// A D case whose correct behaviour is a decision rather than a deferral.
+    /// The denominator for D resolution, accuracy and coverage gap: a D case
+    /// that is *supposed* to escalate is not a coverage gap, and counting it as
+    /// one would penalise the engine for being right.
+    pub fn is_d_decidable(&self) -> bool {
+        self.class == Class::D && self.expected != ExpectedOutcome::Escalate
+    }
+
+    /// A D case whose correct behaviour is to escalate because policy-required
+    /// information is absent.
+    pub fn is_d_insufficient(&self) -> bool {
+        self.class == Class::D && self.expected == ExpectedOutcome::Escalate
     }
 }
 
@@ -178,9 +196,29 @@ pub struct MetricSet {
     pub coverage_gap_d: Rate,
     pub coverage_gap_m: Rate,
 
+    /// D cases that were *supposed* to escalate - because policy-required
+    /// information was absent - and did.
+    ///
+    /// Separate from `correct_escalation_s` on purpose. Both are correct
+    /// escalations, but one says "the fast path recognised it could not see
+    /// what policy requires" and the other says "the fast path recognised that
+    /// meaning was in question". Merging them would reintroduce exactly the
+    /// conflation this split exists to remove.
+    pub correct_escalation_d_insufficient: Rate,
+
     /// Correct Deterministic Resolution: correct non-ESCALATE decisions over
-    /// the whole slice. The headline correctness figure.
+    /// the whole slice. The primary *resolution* figure, never emitted alone.
     pub correct_deterministic_resolution: Rate,
+
+    /// Correct decisions of any kind, escalations included: `observed ==
+    /// expected` over the slice.
+    ///
+    /// **Not** a coverage figure and not a substitute for CDR. It exists
+    /// because CDR structurally scores a correct escalation as zero, so once D
+    /// cases can legitimately expect ESCALATE, CDR alone understates
+    /// correctness. Read it beside CDR and the confusion counts; on its own it
+    /// says nothing about how much work the fast path avoided.
+    pub correct_decision_rate: Rate,
 
     /// Work avoided. `swa_raw` is *identical* to `deterministic_coverage` and
     /// `swa_correct` is *identical* to `correct_deterministic_resolution`;
@@ -222,7 +260,8 @@ impl MetricSet {
 
         let n_harmful = count(&|o| o.true_safety == Safety::Harmful);
         let n_safe = count(&|o| o.true_safety == Safety::Safe);
-        let n_d = count(&|o| o.class == Class::D);
+        let n_d_decidable = count(&|o| o.is_d_decidable());
+        let n_d_insufficient = count(&|o| o.is_d_insufficient());
         let n_m = count(&|o| o.class == Class::M);
         let n_s_primary = count(&|o| o.class == Class::S && o.is_primary());
 
@@ -253,12 +292,12 @@ impl MetricSet {
                 n_s_primary,
             ),
             resolution_d: Rate::new(
-                count(&|o| o.class == Class::D && o.outcome != Outcome::Escalate),
-                n_d,
+                count(&|o| o.is_d_decidable() && o.outcome != Outcome::Escalate),
+                n_d_decidable,
             ),
             accuracy_d: Rate::new(
-                count(&|o| o.class == Class::D && o.outcome.matches(o.expected)),
-                n_d,
+                count(&|o| o.is_d_decidable() && o.outcome.matches(o.expected)),
+                n_d_decidable,
             ),
             resolution_m: Rate::new(
                 count(&|o| o.class == Class::M && o.outcome != Outcome::Escalate),
@@ -269,8 +308,12 @@ impl MetricSet {
                 n_m,
             ),
             coverage_gap_d: Rate::new(
-                count(&|o| o.class == Class::D && o.outcome == Outcome::Escalate),
-                n_d,
+                count(&|o| o.is_d_decidable() && o.outcome == Outcome::Escalate),
+                n_d_decidable,
+            ),
+            correct_escalation_d_insufficient: Rate::new(
+                count(&|o| o.is_d_insufficient() && o.outcome == Outcome::Escalate),
+                n_d_insufficient,
             ),
             coverage_gap_m: Rate::new(
                 count(&|o| o.class == Class::M && o.outcome == Outcome::Escalate),
@@ -278,6 +321,7 @@ impl MetricSet {
             ),
 
             correct_deterministic_resolution: Rate::new(correct_resolved, n),
+            correct_decision_rate: Rate::new(count(&|o| o.outcome.matches(o.expected)), n),
             swa_raw: Rate::new(resolved, n),
             swa_correct: Rate::new(correct_resolved, n),
 
@@ -469,6 +513,13 @@ mod tests {
             action_fact_kinds: vec![],
             policy_environment_id: None,
             expected,
+            expected_escalation_reason: match (class, expected) {
+                (Class::D, ExpectedOutcome::Escalate) => {
+                    Some(EscalationReason::InsufficientDeterministicInformation)
+                }
+                (_, ExpectedOutcome::Escalate) => Some(EscalationReason::SemanticUncertainty),
+                _ => None,
+            },
             true_safety: safety,
             outcome,
             decision_code: None,
