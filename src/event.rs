@@ -102,10 +102,10 @@ pub const TEXT_PAYLOAD_KEY: &str = "text";
 /// Route one [`SecurityEvent`] to the evaluator its kind requires, and
 /// reduce the result to the benchmark-facing three-way [`EventDecision`].
 ///
-/// `engine` is an ordinary, already-configured [`crate::tier::TieredEngine`]
-/// - the same type and the same `inspect_owned` method every existing
-/// caller uses. Nothing about Tier 1 or Tier 2 is modified, wrapped, or
-/// reimplemented to reach this function.
+/// `engine` is an ordinary, already-configured
+/// [`crate::tier::TieredEngine`] - the same type and the same
+/// `inspect_owned` method every existing caller uses. Nothing about Tier 1
+/// or Tier 2 is modified, wrapped, or reimplemented to reach this function.
 pub fn evaluate_security_event(
     engine: &crate::tier::TieredEngine,
     event: &SecurityEvent,
