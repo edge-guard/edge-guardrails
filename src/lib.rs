@@ -8,6 +8,7 @@
 //! | [`codes`] | the violation code space: disjoint bands per producer |
 //! | [`stream`] | latching guard for token-by-token LLM output |
 //! | [`deobfuscate`] | aggressive input normalization, run before any matching |
+//! | [`event`] | unified `SecurityEvent` contract (Input/Output/Action) for the Routing Benchmark |
 //! | [`ffi`] | C ABI, for embedded devices and C/C++ network proxies |
 //! | [`graph`] | proximity-aware boolean rule graph over one Aho-Corasick pass |
 //! | [`semantic`] | ONNX / TinyBERT abstraction for Tier 2 semantic scoring |
@@ -19,6 +20,7 @@ pub mod audit_queue;
 pub mod codes;
 pub mod deferred;
 pub mod deobfuscate;
+pub mod event;
 pub mod ffi;
 pub mod graph;
 pub mod semantic;
