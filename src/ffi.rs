@@ -601,7 +601,11 @@ mod tests {
 
             let (rc, clean) = scan(g, "Summarize the Q3 revenue report.");
             assert_eq!(rc, EDGEGUARD_OK);
-            assert_eq!(clean.verdict, EDGEGUARD_VERDICT_PASS);
+            // Routing v0.2: no deterministic signal is not a terminal PASS.
+            // This engine has no scorer, so clean text escalates. The point of
+            // this assertion is unchanged - the C ABI reports the SAME verdict
+            // the Rust API produced, and it is not a block.
+            assert_eq!(clean.verdict, EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK);
 
             let (rc, bad) = scan(
                 g,
@@ -690,7 +694,13 @@ mod tests {
             let mut d = edgeguard_decision::default();
             let rc = edgeguard_scan(g, big.as_ptr() as *const c_char, big.len(), &mut d);
             assert_eq!(rc, EDGEGUARD_OK);
-            assert_eq!(d.verdict, EDGEGUARD_VERDICT_PASS);
+            // The property under test is that the SIZE GUARD did not fire at
+            // exactly the limit - the input was analyzed. Routing v0.2 makes
+            // the resulting verdict an escalation rather than a terminal PASS;
+            // what must stay true is that it is not the 413 refusal.
+            assert_ne!(d.decided_by, EDGEGUARD_STAGE_SIZE_GUARD);
+            assert_ne!(d.violation_code, 413);
+            assert_eq!(d.verdict, EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK);
 
             edgeguard_engine_free(g);
         }
@@ -863,7 +873,10 @@ mod tests {
             let mut d = edgeguard_decision::default();
             // Empty prompt with a null pointer is legal: len 0 means no read.
             assert_eq!(edgeguard_scan(g, ptr::null(), 0, &mut d), EDGEGUARD_OK);
-            assert_eq!(d.verdict, EDGEGUARD_VERDICT_PASS);
+            // Handled rather than dereferenced is the property; under routing
+            // v0.2 an empty prompt carries no deterministic signal and so
+            // escalates instead of terminally passing.
+            assert_eq!(d.verdict, EDGEGUARD_VERDICT_NEEDS_SEMANTIC_CHECK);
             // Null out-pointer must be refused, not written through.
             assert_eq!(
                 edgeguard_scan(g, b"x".as_ptr() as *const c_char, 1, ptr::null_mut()),

@@ -1,0 +1,205 @@
+{
+  "experiment_version": "1.0.0",
+  "core_aggregate_sha256": "2e8d2816b3fea84f9a7baf4a6e637251ecef0d0ee962bbcae9283ada08777807",
+  "core_files": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/audit_queue.rs",
+      "sha256": "48a7dd59ecb6006984a17a8aaced03893d132bccbf59b7a2f52dc3c3d0f6cd95",
+      "bytes": 32263
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/codes.rs",
+      "sha256": "6fa4aeee4a6750a84e6ef667f6de37a94fdb4fa9719ca7ba687afbf821cef7c6",
+      "bytes": 13339
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/deferred.rs",
+      "sha256": "2f3cbe386ad228a64118a89343b116023d5da8fec0b68d73f35a58da427c787e",
+      "bytes": 50148
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/deobfuscate.rs",
+      "sha256": "400b5b890b2c2becb360fd57b84b75f629dfcaf3bbf736da146d0ed2f9245daf",
+      "bytes": 124428
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/event.rs",
+      "sha256": "d895a577424651fe6ed22a786079d6d860e91cf7e7e9b5f177974c27b1283f59",
+      "bytes": 38611
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/ffi.rs",
+      "sha256": "cddc3f5b3f3c181ebe8cc825cd4efb6c28f46defd16f8248f6b9c855d9faa63b",
+      "bytes": 42032
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/graph.rs",
+      "sha256": "f3f3729923f6bc4e39a0687ccc1f45e4c9047bf2cfaccda32720ad62f4bde986",
+      "bytes": 88022
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/lib.rs",
+      "sha256": "09daaefb56d63e89c8131d26b7c8a777cda774e034482e3d030414a760fa8994",
+      "bytes": 141759
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/semantic.rs",
+      "sha256": "76217619b0e3397add0593e188ce6089a2fb92a694d99a2455a8a17c738dc2b7",
+      "bytes": 54820
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/signing.rs",
+      "sha256": "770058316ad7a5296bca574a2838cbd02df7c3356acebef43d073393b51a4a75",
+      "bytes": 46785
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/slowpath.rs",
+      "sha256": "332c63c47d810bf4d5448eaa5939871bb33c4474d52bf6c6e7515de8b57b9e4b",
+      "bytes": 24532
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/stream.rs",
+      "sha256": "e9c28a3238098cd29e024e1b4a09f0042ce852e6d83dd021e69355b5f404fed2",
+      "bytes": 18709
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/tier.rs",
+      "sha256": "5a596780789921415439922ae02523865dc71301872e06751c8b1eb557c42fe3",
+      "bytes": 105101
+    }
+  ],
+  "policy_files": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/policy.yaml",
+      "sha256": "26189e168dad02e467edd14e812721f54e9433a3796bcd34aafc088a20f203f2",
+      "bytes": 2016
+    }
+  ],
+  "harness_files": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/adapter.rs",
+      "sha256": "ee897b6b5fd6f7ad5f2bb59c153f2b44eb65a1526a25ee8e6fe932926374d9bd",
+      "bytes": 11433
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/bin/phase2.rs",
+      "sha256": "fe718608c81fda70b7259888847131666103be2f2b16d783b4599eae1792e15a",
+      "bytes": 10849
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/lib.rs",
+      "sha256": "0fc332ee84313638decbafec7c011b5e9d30905b1a55051091d52f648ed2907a",
+      "bytes": 1208
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/manifest.rs",
+      "sha256": "53d3871771d92864ccf8e9f36ced5779d6500db91569dc36354b32530a038fa2",
+      "bytes": 13056
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/metrics.rs",
+      "sha256": "a83a107422870fd6d6c1fbcf05a137bf82c8f2aaeb345cc59c3bc18f19937585",
+      "bytes": 12636
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/results.rs",
+      "sha256": "5e7706a9f517b2fa90fe5a46608043529e988d2e08553d08f4cd5a2eb801bb57",
+      "bytes": 3737
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/schema.rs",
+      "sha256": "728b0980dab141aab995d411234267b5a37b8e93bcb22844b4facefcb17f0e12",
+      "bytes": 14361
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/experiment_pack_v1/src/timing.rs",
+      "sha256": "b7e81514d4c955216e38d15924f1bffe77c72481dddf5c4358cb0e951c456238",
+      "bytes": 7475
+    }
+  ],
+  "metric_impl_sha256": "a83a107422870fd6d6c1fbcf05a137bf82c8f2aaeb345cc59c3bc18f19937585",
+  "dataset_files": [],
+  "annotation_files": [],
+  "comparators": [
+    {
+      "name": "hand-written deterministic rules baseline",
+      "repository": null,
+      "version_or_commit": null,
+      "license": "n/a (written for this experiment)",
+      "deployment_model": "in-process Rust, same machine",
+      "executable_path": null,
+      "executable": true,
+      "exclusion_reason": null
+    },
+    {
+      "name": "EdgeGuard Tier2-all",
+      "repository": null,
+      "version_or_commit": "e6fd1a5379a62ec065eaedbd06875493c66816526a4f2a42d5610cd3d184cfa8",
+      "license": "same as Core",
+      "deployment_model": "in-process, scorer forced on every event",
+      "executable_path": null,
+      "executable": false,
+      "exclusion_reason": "Tier-2 backend not compiled in: the `onnx` feature is off by default and ORT_DYLIB_PATH is unset. A mock scorer can stand in for ROUTING tests but must never be reported as semantic quality."
+    },
+    {
+      "name": "Cedar",
+      "repository": "https://github.com/cedar-policy/cedar",
+      "version_or_commit": null,
+      "license": "Apache-2.0",
+      "deployment_model": "local policy evaluation, in-process",
+      "executable_path": null,
+      "executable": false,
+      "exclusion_reason": "Not vendored and not pinned in Phase I; no network acquisition was performed. Semantics are comparable only for the typed-argument/principal-resource subset."
+    },
+    {
+      "name": "OPA",
+      "repository": "https://github.com/open-policy-agent/opa",
+      "version_or_commit": null,
+      "license": "Apache-2.0",
+      "deployment_model": "local binary or Go library",
+      "executable_path": null,
+      "executable": false,
+      "exclusion_reason": "Not installed in this environment and not acquired in Phase I."
+    },
+    {
+      "name": "Jataayu-class deterministic local guard",
+      "repository": null,
+      "version_or_commit": null,
+      "license": null,
+      "deployment_model": "unknown",
+      "executable_path": null,
+      "executable": false,
+      "exclusion_reason": "No public executable implementation was located in Phase I. The Pack's Jataayu-equivalence test therefore cannot be settled by direct measurement; it must be argued from capability analysis and labelled as such."
+    },
+    {
+      "name": "Lasso (vendor-published figures)",
+      "repository": null,
+      "version_or_commit": null,
+      "license": null,
+      "deployment_model": "vendor-published; not run here",
+      "executable_path": null,
+      "executable": false,
+      "exclusion_reason": "Pack §5: vendor numbers are external reference only and must never be mixed into direct same-machine measured rankings."
+    }
+  ],
+  "seeds": {
+    "holdout_generator": 0
+  },
+  "environment": {
+    "arch": "aarch64",
+    "os": "macos",
+    "profile": "release"
+  },
+  "case_inclusion_rules": [
+    "Track A: mutating or security-sensitive actions only; trivial read-only calls excluded from the headline (Pack §3).",
+    "Track A: a case may be labelled D only if the SOURCE workload supplies the deterministic basis; inventing host state to reach D is forbidden (Pack §7).",
+    "Track B: raw content preserved verbatim; label provenance recorded (Pack §6.2).",
+    "Track B: 'no malicious label' is never recorded as SAFE (Pack §3).",
+    "Track C: development scenarios permitted where no external corpus exists, but marked externally_sourced=false (Pack §7)."
+  ],
+  "case_exclusion_rules": [
+    "Any case appearing in benchmark/corpus/dev, verbatim or as a near-duplicate (normalised-text equality or shingle overlap), is excluded from holdout.",
+    "Any case drawn from the repository's pre-benchmark development scripts (redteam_adaptive.py, corpus_enterprise.py, measure_grey_rate.py, hardcore_redteam.py, comprehensive_test.py, enterprise_audit.py, tests/) is excluded from holdout.",
+    "No case may be excluded after observing an EdgeGuard output (Pack §6.6)."
+  ]
+}

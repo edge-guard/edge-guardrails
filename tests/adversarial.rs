@@ -769,12 +769,17 @@ fn ordinary_punctuated_prose_is_not_flagged_as_separator_split() {
         "The read/write ratio is 3:1 and the p99 is 12.4ms.",
     ] {
         let d = engine.inspect_owned(benign);
-        assert_eq!(
-            d.verdict,
-            Verdict::Pass,
-            "benign text was not allowed: {:?} -> {}",
+        // The lane's false-POSITIVE behaviour is what decides whether it can
+        // ship, so the property is "the separator-split lane did not fire on
+        // this", i.e. not blocked. Routing v0.2 escalates no-signal text
+        // rather than passing it terminally, which is not a lane false
+        // positive.
+        assert!(
+            !d.verdict.is_blocked(),
+            "benign text was blocked: {:?} -> {} ({:?})",
             benign,
-            d.reason
+            d.reason,
+            d.decided_by
         );
     }
 }

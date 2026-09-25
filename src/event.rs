@@ -216,6 +216,7 @@ pub struct ActionRule {
 pub const ESCALATE_UNKNOWN_ACTION: &str = "EG_UNKNOWN_ACTION";
 pub const ESCALATE_MISSING_REQUIRED_FIELD: &str = "EG_MISSING_REQUIRED_FIELD";
 pub const ESCALATE_PROVENANCE_MISMATCH: &str = "EG_PROVENANCE_MISMATCH";
+pub const ESCALATE_UNCOVERED_FIELD: &str = "EG_UNCOVERED_FIELD";
 pub const ESCALATE_WRONG_EVENT_KIND: &str = "EG_WRONG_EVENT_KIND";
 
 /// Why one [`ActionRule`] did not, or could not, produce a violation.
@@ -246,10 +247,11 @@ enum RuleOutcome {
 ///
 /// # What `Pass` means
 ///
-/// `Pass` is returned only when at least one rule applied to this action and
-/// **every** applicable rule was successfully evaluated and none fired. It
-/// never means "no rule matched", "a fact was missing", or "the comparison
-/// could not be performed" - each of those is a non-`Pass` result:
+/// `Pass` is returned only when at least one rule applied to this action,
+/// **every** applicable rule was successfully evaluated and none fired, and
+/// every payload field is covered by at least one applicable rule. It never
+/// means "no rule matched", "a fact was missing", "an extra field was ignored",
+/// or "the comparison could not be performed" - each is a non-`Pass` result:
 ///
 /// - No rule is defined for the action name at all: [`EventDecision::Escalate`]
 ///   ([`ESCALATE_UNKNOWN_ACTION`]). The rule set is the only description of
@@ -261,6 +263,9 @@ enum RuleOutcome {
 ///   require: `Escalate` ([`ESCALATE_PROVENANCE_MISMATCH`]). Provenance is
 ///   matched exactly - [`Provenance`] defines no trust ordering between its
 ///   variants, so none is assumed here.
+/// - A payload field is not named by any applicable rule: `Escalate`
+///   ([`ESCALATE_UNCOVERED_FIELD`]). The evaluator cannot claim complete
+///   deterministic coverage for data it never examined.
 /// - An applicable rule's field cannot be compared against its threshold:
 ///   [`EventDecision::Block`] with code `EG_TYPE_MISMATCH`. This fails closed
 ///   rather than escalating because the mismatch is a defect in the rule or
@@ -333,6 +338,22 @@ pub fn evaluate_action(event: &SecurityEvent, rules: &[ActionRule]) -> EventDeci
     if let Some(reason) = escalation {
         return EventDecision::Escalate { reason };
     }
+
+    // PASS is a claim of deterministic coverage, not merely "all configured
+    // rules happened to pass". Any payload field that no rule for this action
+    // names remains unresolved and must therefore be escalated.
+    if let Some(field) = event.payload.keys().find(|field| {
+        !rules
+            .iter()
+            .any(|r| r.action_name == name && r.field == field.as_str())
+    }) {
+        return EventDecision::Escalate {
+            reason: format!(
+                "{ESCALATE_UNCOVERED_FIELD}: payload field \"{field}\" is not covered by any rule for action \"{name}\""
+            ),
+        };
+    }
+
     EventDecision::Pass
 }
 
@@ -442,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn an_output_event_with_clean_text_passes() {
+    fn an_output_event_with_clean_text_escalates_without_semantic_tier() {
         let engine = TieredEngine::with_baseline();
         let mut payload = HashMap::new();
         payload.insert(
@@ -460,7 +481,7 @@ mod tests {
 
         assert!(matches!(
             evaluate_security_event(&engine, &event, &[]),
-            EventDecision::Pass
+            EventDecision::Escalate { .. }
         ));
     }
 
@@ -831,6 +852,31 @@ mod tests {
             );
         }
         action_event("execute_payment", payload)
+    }
+
+    #[test]
+    fn uncovered_payload_field_escalates_instead_of_passing() {
+        let mut payload = HashMap::new();
+        payload.insert(
+            "amount".to_string(),
+            attr(Value::Integer(500), Provenance::HostAuthoritative),
+        );
+        payload.insert(
+            "destination_account".to_string(),
+            attr(
+                Value::String("ATTACKER-IBAN".to_string()),
+                Provenance::ModelProposed,
+            ),
+        );
+        let event = action_event("execute_payment", payload);
+
+        match evaluate_action(&event, &[amount_rule()]) {
+            EventDecision::Escalate { reason } => {
+                assert!(reason.starts_with(ESCALATE_UNCOVERED_FIELD));
+                assert!(reason.contains("destination_account"));
+            }
+            other => panic!("expected Escalate, got {other:?}"),
+        }
     }
 
     #[test]

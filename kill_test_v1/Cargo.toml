@@ -1,0 +1,22 @@
+[package]
+name = "edgeguard-kill-test-v1"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+# Standalone package outside production Core, deliberately NOT a workspace
+# member of edgeguard-sdk. The Core is a DEPENDENCY under test, never edited
+# for measurement convenience.
+#
+# Cedar is pinned to the SAME version Microsoft AGT pins (=4.13.0), so the
+# Cedar substitution track and the AGT track are not silently measuring two
+# different Cedar builds.
+[dependencies]
+edgeguard-sdk = { path = ".." }
+cedar-policy = "=4.13.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+serde_json = "1.0"

@@ -1,0 +1,354 @@
+[
+  {
+    "track": "host_burden",
+    "case_id": "T2-HOST-OPENAI",
+    "source": "authored:phase1.5",
+    "externally_sourced": false,
+    "development_only": true,
+    "expected_class": "D-BLOCK",
+    "expected_verdict": "BLOCK",
+    "fact_basis": [
+      {
+        "limit": {
+          "detail": "transfer_amount_cents > principal.daily_remaining_cents"
+        }
+      }
+    ],
+    "label_source": {
+      "pre_registered_authored": {
+        "annotator": "phase1.5-harness"
+      }
+    },
+    "needs_second_annotation": false,
+    "action_name": "transfer_funds",
+    "host_facts": [
+      {
+        "name": "principal_id",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "transfer_amount_cents",
+        "value": 75000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "daily_remaining_cents",
+        "value": 25000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "resource_id",
+        "value": "acct-88",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "account_owner",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      }
+    ],
+    "host_facts_count": 5,
+    "context_bytes": 485,
+    "burden": {
+      "integration_loc": 0,
+      "policy_loc": 0,
+      "manual_mappings": 5,
+      "setup_steps": 0,
+      "external_runtime_deps": [
+        "openai"
+      ],
+      "state_owned_by_system": false,
+      "network_required_on_hot_path": false,
+      "policy_update_requires_app_rebuild": false
+    },
+    "outcomes": [],
+    "notes": "OpenAI SDK tool call. LOC/setup are PLACEHOLDERS pending implementation - see BLOCKERS."
+  },
+  {
+    "track": "host_burden",
+    "case_id": "T2-HOST-LANGGRAPH",
+    "source": "authored:phase1.5",
+    "externally_sourced": false,
+    "development_only": true,
+    "expected_class": "D-BLOCK",
+    "expected_verdict": "BLOCK",
+    "fact_basis": [
+      {
+        "limit": {
+          "detail": "transfer_amount_cents > principal.daily_remaining_cents"
+        }
+      }
+    ],
+    "label_source": {
+      "pre_registered_authored": {
+        "annotator": "phase1.5-harness"
+      }
+    },
+    "needs_second_annotation": false,
+    "action_name": "transfer_funds",
+    "host_facts": [
+      {
+        "name": "principal_id",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "transfer_amount_cents",
+        "value": 75000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "daily_remaining_cents",
+        "value": 25000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "resource_id",
+        "value": "acct-88",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "account_owner",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      }
+    ],
+    "host_facts_count": 5,
+    "context_bytes": 485,
+    "burden": {
+      "integration_loc": 0,
+      "policy_loc": 0,
+      "manual_mappings": 5,
+      "setup_steps": 0,
+      "external_runtime_deps": [
+        "langgraph",
+        "langchain-core"
+      ],
+      "state_owned_by_system": false,
+      "network_required_on_hot_path": false,
+      "policy_update_requires_app_rebuild": false
+    },
+    "outcomes": [],
+    "notes": "LangGraph node/tool interception. PLACEHOLDER."
+  },
+  {
+    "track": "host_burden",
+    "case_id": "T2-HOST-CREWAI",
+    "source": "authored:phase1.5",
+    "externally_sourced": false,
+    "development_only": true,
+    "expected_class": "D-BLOCK",
+    "expected_verdict": "BLOCK",
+    "fact_basis": [
+      {
+        "limit": {
+          "detail": "transfer_amount_cents > principal.daily_remaining_cents"
+        }
+      }
+    ],
+    "label_source": {
+      "pre_registered_authored": {
+        "annotator": "phase1.5-harness"
+      }
+    },
+    "needs_second_annotation": false,
+    "action_name": "transfer_funds",
+    "host_facts": [
+      {
+        "name": "principal_id",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "transfer_amount_cents",
+        "value": 75000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "daily_remaining_cents",
+        "value": 25000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "resource_id",
+        "value": "acct-88",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "account_owner",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      }
+    ],
+    "host_facts_count": 5,
+    "context_bytes": 485,
+    "burden": {
+      "integration_loc": 0,
+      "policy_loc": 0,
+      "manual_mappings": 5,
+      "setup_steps": 0,
+      "external_runtime_deps": [
+        "crewai"
+      ],
+      "state_owned_by_system": false,
+      "network_required_on_hot_path": false,
+      "policy_update_requires_app_rebuild": false
+    },
+    "outcomes": [],
+    "notes": "Third popular Python agent framework. PLACEHOLDER."
+  },
+  {
+    "track": "host_burden",
+    "case_id": "T2-HOST-PLAINPY",
+    "source": "authored:phase1.5",
+    "externally_sourced": false,
+    "development_only": true,
+    "expected_class": "D-BLOCK",
+    "expected_verdict": "BLOCK",
+    "fact_basis": [
+      {
+        "limit": {
+          "detail": "transfer_amount_cents > principal.daily_remaining_cents"
+        }
+      }
+    ],
+    "label_source": {
+      "pre_registered_authored": {
+        "annotator": "phase1.5-harness"
+      }
+    },
+    "needs_second_annotation": false,
+    "action_name": "transfer_funds",
+    "host_facts": [
+      {
+        "name": "principal_id",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "transfer_amount_cents",
+        "value": 75000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "daily_remaining_cents",
+        "value": 25000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "resource_id",
+        "value": "acct-88",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "account_owner",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      }
+    ],
+    "host_facts_count": 5,
+    "context_bytes": 485,
+    "burden": {
+      "integration_loc": 0,
+      "policy_loc": 0,
+      "manual_mappings": 5,
+      "setup_steps": 0,
+      "external_runtime_deps": [],
+      "state_owned_by_system": false,
+      "network_required_on_hot_path": false,
+      "policy_update_requires_app_rebuild": false
+    },
+    "outcomes": [],
+    "notes": "Plain Python service via the FFI/Python binding. PLACEHOLDER."
+  },
+  {
+    "track": "host_burden",
+    "case_id": "T2-HOST-RUST",
+    "source": "authored:phase1.5",
+    "externally_sourced": false,
+    "development_only": true,
+    "expected_class": "D-BLOCK",
+    "expected_verdict": "BLOCK",
+    "fact_basis": [
+      {
+        "limit": {
+          "detail": "transfer_amount_cents > principal.daily_remaining_cents"
+        }
+      }
+    ],
+    "label_source": {
+      "pre_registered_authored": {
+        "annotator": "phase1.5-harness"
+      }
+    },
+    "needs_second_annotation": false,
+    "action_name": "transfer_funds",
+    "host_facts": [
+      {
+        "name": "principal_id",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "transfer_amount_cents",
+        "value": 75000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "daily_remaining_cents",
+        "value": 25000,
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "resource_id",
+        "value": "acct-88",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      },
+      {
+        "name": "account_owner",
+        "value": "u-42",
+        "provenance": "host_authoritative",
+        "ai_specific": false
+      }
+    ],
+    "host_facts_count": 5,
+    "context_bytes": 485,
+    "burden": {
+      "integration_loc": 0,
+      "policy_loc": 0,
+      "manual_mappings": 5,
+      "setup_steps": 0,
+      "external_runtime_deps": [],
+      "state_owned_by_system": false,
+      "network_required_on_hot_path": false,
+      "policy_update_requires_app_rebuild": false
+    },
+    "outcomes": [],
+    "notes": "Rust-native host, in-process. PLACEHOLDER."
+  }
+]

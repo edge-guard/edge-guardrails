@@ -1,0 +1,22 @@
+[package]
+name = "edgeguard-experiment-pack-v1"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+# A standalone package, deliberately NOT a workspace member of edgeguard-sdk,
+# and deliberately outside `src/`. The production Core is a DEPENDENCY of the
+# experiment; the experiment is never a reason to edit the Core. Nothing here
+# may require a change to the engine's Cargo.toml, lockfile, or sources to
+# build - it consumes the engine exactly as a downstream integrator would.
+#
+# Frozen Core under measurement: routing v0.2, aggregate src/*.rs SHA-256
+# e6fd1a5379a62ec065eaedbd06875493c66816526a4f2a42d5610cd3d184cfa8
+[dependencies]
+edgeguard-sdk = { path = ".." }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+serde_json = "1.0"

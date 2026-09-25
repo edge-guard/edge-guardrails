@@ -2411,8 +2411,9 @@ impl PyTieredGuard {
         (verdict, d.code, rule_id)
     }
 
-    /// Counters for the control plane. `model_bypass_ratio` is the one that
-    /// says whether the tiering is doing its job.
+    /// Counters for the control plane. `model_bypass_ratio` is a transport
+    /// metric only; `safe_local_resolution_ratio` is the deterministic Core
+    /// resolution metric used by routing-economics experiments.
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let m = self.inner.metrics();
         let d = PyDict::new(py);
@@ -2433,6 +2434,10 @@ impl PyTieredGuard {
         d.set_item("tier2_shed", m.tier2_shed)?;
         d.set_item("internal_errors", m.internal_errors)?;
         d.set_item("model_bypass_ratio", m.model_bypass_ratio())?;
+        d.set_item(
+            "safe_local_resolution_ratio",
+            m.safe_local_resolution_ratio(),
+        )?;
         d.set_item("breaker_open", self.inner.breaker().is_open())?;
         d.set_item("breaker_trips", self.inner.breaker().trips())?;
         Ok(d)

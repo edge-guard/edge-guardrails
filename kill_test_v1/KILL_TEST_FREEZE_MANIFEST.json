@@ -1,0 +1,381 @@
+{
+  "experiment": "EdgeGuard Kill-Test",
+  "version": "1.0.0",
+  "core_branch": "routing-contract-v0.2",
+  "core_head": "2d6d75a8f43a7240f63f7dad90f5dcfacb874ced",
+  "core_production": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/audit_queue.rs",
+      "sha256": "48a7dd59ecb6006984a17a8aaced03893d132bccbf59b7a2f52dc3c3d0f6cd95",
+      "production_region_sha256": "4ba2b5990d3d0a262bb7d54dec60dae70a6b69fec560cb7a3ca47e87b6874e35",
+      "bytes": 32263
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/codes.rs",
+      "sha256": "6fa4aeee4a6750a84e6ef667f6de37a94fdb4fa9719ca7ba687afbf821cef7c6",
+      "production_region_sha256": "930c68c7ffa4a470bea6f5df572312c7a80591395cab26f100d49c8eafda6913",
+      "bytes": 13339
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/deferred.rs",
+      "sha256": "2f3cbe386ad228a64118a89343b116023d5da8fec0b68d73f35a58da427c787e",
+      "production_region_sha256": "4d2f524f1187aae46cd84493d86af8e7ccd526ac38a6a87ee8e4ac3b5d308eb4",
+      "bytes": 50148
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/deobfuscate.rs",
+      "sha256": "400b5b890b2c2becb360fd57b84b75f629dfcaf3bbf736da146d0ed2f9245daf",
+      "production_region_sha256": "6ce5bc5be14c98c3d1b7f38b56d4b044c479d570f2470804e0bdb4772bd369ad",
+      "bytes": 124428
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/event.rs",
+      "sha256": "d895a577424651fe6ed22a786079d6d860e91cf7e7e9b5f177974c27b1283f59",
+      "production_region_sha256": "e28b9bc98f8c1f266b5d0e9981a64282cb857b2abdda08093d69053f42a85a82",
+      "bytes": 38611
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/ffi.rs",
+      "sha256": "cddc3f5b3f3c181ebe8cc825cd4efb6c28f46defd16f8248f6b9c855d9faa63b",
+      "production_region_sha256": "4e28ff13e61d8669dbc901eefd4be873470c37a27b391dfc192ca9f943fc1360",
+      "bytes": 42032
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/graph.rs",
+      "sha256": "f3f3729923f6bc4e39a0687ccc1f45e4c9047bf2cfaccda32720ad62f4bde986",
+      "production_region_sha256": "3df1f19c6cf1983259865a050ef1bfad5aaa6f6cc5720c9d11f6cf8c3252ca15",
+      "bytes": 88022
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/lib.rs",
+      "sha256": "09daaefb56d63e89c8131d26b7c8a777cda774e034482e3d030414a760fa8994",
+      "production_region_sha256": "1658d1184e148b67c5685aae78ac3ddab759b2bf13cae423d3f6c5f521a2305e",
+      "bytes": 141759
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/semantic.rs",
+      "sha256": "76217619b0e3397add0593e188ce6089a2fb92a694d99a2455a8a17c738dc2b7",
+      "production_region_sha256": "a07fa90377adc4ea5eeffc435b453df9f2176f515b08c0f852638b73c1f86f9a",
+      "bytes": 54820
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/signing.rs",
+      "sha256": "770058316ad7a5296bca574a2838cbd02df7c3356acebef43d073393b51a4a75",
+      "production_region_sha256": "16a146b132adbf024bd92a6d46232aff570c536760d0265c21e3c6b0ec7a3392",
+      "bytes": 46785
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/slowpath.rs",
+      "sha256": "332c63c47d810bf4d5448eaa5939871bb33c4474d52bf6c6e7515de8b57b9e4b",
+      "production_region_sha256": "b574794eeee521cb1ce4001859d3cce905bee77aa2012c8911b631f9792e3c09",
+      "bytes": 24532
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/stream.rs",
+      "sha256": "e9c28a3238098cd29e024e1b4a09f0042ce852e6d83dd021e69355b5f404fed2",
+      "production_region_sha256": "94f4e16b43cd07624ce13108a149c410f9ab453177ed697bc2bb3f41cd287255",
+      "bytes": 18709
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/src/tier.rs",
+      "sha256": "5a596780789921415439922ae02523865dc71301872e06751c8b1eb557c42fe3",
+      "production_region_sha256": "3d5288c7832eb70ed13ffe68c279674e5c6bc1216967a0b7289c0c82f5a3ccc3",
+      "bytes": 105101
+    }
+  ],
+  "policy_files": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/policy.yaml",
+      "sha256": "26189e168dad02e467edd14e812721f54e9433a3796bcd34aafc088a20f203f2",
+      "production_region_sha256": null,
+      "bytes": 2016
+    }
+  ],
+  "harness_files": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/adapters.rs",
+      "sha256": "ed56c37babc4ab99ff251a04fce1514158d785668fc840e84a9b4a026586f4aa",
+      "production_region_sha256": "26787427268605a5b74ba401a11feed5f7246144d28e37007789f8f8ddc9b2ba",
+      "bytes": 14986
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/bin/freeze.rs",
+      "sha256": "4d11b47e0427445cbf2159fc82f0152718e04fb3c72246a25ff4abaf39a00322",
+      "production_region_sha256": null,
+      "bytes": 19811
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/cases.rs",
+      "sha256": "4b2894c0ffb7a59a17d1bc023cb8925143c5482dad0f1812491627f076076640",
+      "production_region_sha256": "f6aa32c407d296cfa041d63f74bde2f66f8069f4f9a18b28891c60004455135b",
+      "bytes": 32921
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/lib.rs",
+      "sha256": "c490c69ff259399bbe796181a4bbd0fe5cb310a3e6916af4f398daad2211531f",
+      "production_region_sha256": null,
+      "bytes": 1071
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/manifest.rs",
+      "sha256": "6593e78f8fd7cb27639b8821ffbd553cf05e5454a631540899e139cb565ca63e",
+      "production_region_sha256": "37c0a513891f79d66db4bab588c06b12d3136f9d9e92c86222832ef0411007ca",
+      "bytes": 19159
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/metrics.rs",
+      "sha256": "312b636991db1ea8a5ea05df6aa6f89053d48ca79ab769f08e47fb3847aae1ac",
+      "production_region_sha256": "15eb765707d8e3c9ae151f7d2e614ffc5f9773268d5cf9dd1ea38d4fcd71ed1c",
+      "bytes": 12322
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/results.rs",
+      "sha256": "5e7706a9f517b2fa90fe5a46608043529e988d2e08553d08f4cd5a2eb801bb57",
+      "production_region_sha256": "8f2a7f06ff9c52bfb089ea7d2d8ce980c9dc8f367735977a0e4acce0cd4f774c",
+      "bytes": 3737
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/schema.rs",
+      "sha256": "a189d97a338bd98cbc9136921425dd3b674939788ccb67833806d90ff0fefe5b",
+      "production_region_sha256": "cd6d48b08833688d495b15d450e172eb13b1b37d135e6aebfd3dee2e1c189d3c",
+      "bytes": 12396
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/src/timing.rs",
+      "sha256": "b7e81514d4c955216e38d15924f1bffe77c72481dddf5c4358cb0e951c456238",
+      "production_region_sha256": "54b6d3d8bc5fc8b486450cc43b81b49875e35e2546556984fedab9ab879c5da6",
+      "bytes": 7475
+    }
+  ],
+  "metric_impl_sha256": "312b636991db1ea8a5ea05df6aa6f89053d48ca79ab769f08e47fb3847aae1ac",
+  "case_files": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/cases/track1_cedar_substitution.json",
+      "sha256": "9dae473002070886ba93c6098fdf4acbe4be6dbec9e9708fe4d0aa42748ea0ab",
+      "production_region_sha256": null,
+      "bytes": 27274
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/cases/track2_host_burden.json",
+      "sha256": "ab2be4a4a460f5f67eb66fd263564c5e9d9ecbacfefad525d5e292f35d38319e",
+      "production_region_sha256": null,
+      "bytes": 9061
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/cases/track3_jataayu_boundary_taint.json",
+      "sha256": "65ba1492c483b5f6bfb240028572ecbb634e13cd59c765ef7f98334b5b2cfb8d",
+      "production_region_sha256": null,
+      "bytes": 17523
+    },
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/cases/track4_agt_substitution.json",
+      "sha256": "100ab65b4aa025daf8a5a7c9ce59f0c84a27b026dca7bed6b61b71e14ed47447",
+      "production_region_sha256": null,
+      "bytes": 20065
+    }
+  ],
+  "annotation_files": [
+    {
+      "path": "/Users/shmuelhelman/Downloads/edgeguard-sdk-0.7.0-hardened-baseline 3/kill_test_v1/cases/NEEDS_INDEPENDENT_ANNOTATION.json",
+      "sha256": "57545c2db32e99d177cea20a13a475a2deec7e2b9cbbcbff97081c1ef9772deb",
+      "production_region_sha256": null,
+      "bytes": 22491
+    }
+  ],
+  "comparators": [
+    {
+      "name": "Cedar",
+      "repository": "https://crates.io/crates/cedar-policy",
+      "version": "4.13.0",
+      "commit": null,
+      "license": "Apache-2.0",
+      "license_verified_via": "crates.io metadata",
+      "deployment_model": "in-process Rust library, local only",
+      "executable": true,
+      "local_no_network": true,
+      "build_status": "release build OK; ALLOW and DENY both reproduced on shared facts",
+      "limitations": [
+        "Two-valued: Allow/Deny only. Cedar cannot express abstention, so every M/S case must collapse into one of its two answers. This is a semantic mismatch, recorded rather than papered over (invariant 12).",
+        "Provenance/trust of a fact is not a first-class Cedar concept; it can only be passed as ordinary context data."
+      ]
+    },
+    {
+      "name": "Jataayu",
+      "repository": "https://github.com/saikrishnarallabandi/jataayu",
+      "version": "0.3.1",
+      "commit": "bac74dd115c52b83043078877c83fc4fb7141fac",
+      "license": "Apache-2.0",
+      "license_verified_via": "GitHub licenses API",
+      "deployment_model": "Python package, importable offline (deps: requests, pyyaml)",
+      "executable": true,
+      "local_no_network": true,
+      "build_status": "imports offline; EffectBoundary.preview() reproduced ALLOW / DENY / NEEDS_APPROVAL on throwaway fixtures",
+      "limitations": [
+        "Provenance is binary TRUSTED/UNTRUSTED; EdgeGuard distinguishes three sources. A fair mapping must be pre-registered.",
+        "Authorization is keyed on EFFECT CLASS of the tool (NETWORK/SHELL/FILE_WRITE/...), not on typed argument values. Limit/threshold cases have no direct expression.",
+        "Observed on a throwaway fixture under default config: an unrecognised tool classifies as READ and returns ALLOW. Pre-registered as a comparator property; `strict`/`tool_effects` config may change it and the pinned config must be recorded before the blind run."
+      ]
+    },
+    {
+      "name": "Microsoft Agent Governance Toolkit",
+      "repository": "https://github.com/microsoft/agent-governance-toolkit",
+      "version": "5.0.0",
+      "commit": "3da5a50c5d98c2151a5f69537535f5a71d64ea13",
+      "license": "MIT",
+      "license_verified_via": "GitHub licenses API",
+      "deployment_model": "Rust workspace (agentmesh), in-process, local",
+      "executable": true,
+      "local_no_network": true,
+      "build_status": "cargo build --release OK (53s, 4 warnings, exit 0)",
+      "limitations": [
+        "AGT's own Rust workspace pins cedar-policy =4.13.0 and regorus =0.12.0, so the AGT and Cedar tracks are NOT independent: AGT embeds the same Cedar build.",
+        "PolicyDecision is Allow / Deny / RequiresApproval / RateLimited - a four-valued result. RequiresApproval is the nearest analogue of ESCALATE and the mapping must be pre-registered.",
+        "policy.rs::evaluate returns Allow when no profile is loaded - a documented fail-open default. Pre-registered in case T4-AGT-12-FAILMODE."
+      ]
+    },
+    {
+      "name": "Handwritten direct-conditional rules",
+      "repository": null,
+      "version": "kill_test_v1::adapters::HandwrittenRules",
+      "commit": null,
+      "license": "n/a (authored here)",
+      "license_verified_via": null,
+      "deployment_model": "in-process Rust, same resolved facts",
+      "executable": true,
+      "local_no_network": true,
+      "build_status": "unit-tested",
+      "limitations": [
+        "Silently allows any action nobody wrote a branch for. Pre-registered property, not a discovered result."
+      ]
+    }
+  ],
+  "datasets": [
+    {
+      "name": "Agent-SafetyBench",
+      "url": "https://github.com/thu-coai/Agent-SafetyBench",
+      "commit": "74feea8de601b3a1449a93fcf70017fe61556f73",
+      "license": "MIT",
+      "records": 2000,
+      "label_provenance": "dataset-carried safety labels over 701 environment files",
+      "commercial_use": "permitted (MIT)",
+      "supports_dmsl": "PARTIAL - carries harm/safety labels for agent behaviour, but supplies no host-authoritative state (budgets, ownership, delegation), so a D label cannot be assigned without inventing facts. Usable for M/S and for Content-style slices.",
+      "status": "acquired and frozen; NOT converted to cases; NOT exposed to EdgeGuard"
+    },
+    {
+      "name": "InjecAgent",
+      "url": "https://github.com/uiuc-kang-lab/InjecAgent",
+      "commit": "f19c9f2c79a41046eb13c03c51a24c567a8ffa07",
+      "license": "MIT",
+      "records": null,
+      "label_provenance": "attack/injection labels carried per record",
+      "commercial_use": "permitted (MIT)",
+      "supports_dmsl": "PARTIAL - 'prompt injection present' is NOT the same as a correct EdgeGuard verdict (spec §4). Supports S and some M; no host state for D.",
+      "status": "previously acquired in benchmark/corpus_sources; unchanged"
+    },
+    {
+      "name": "AgentDojo",
+      "url": "https://github.com/ethz-spylab/agentdojo",
+      "commit": "089ed468cf3ed0322acc66b0211f26d9d90dbf60",
+      "license": "MIT",
+      "records": null,
+      "label_provenance": "attack-success labels",
+      "commercial_use": "permitted (MIT)",
+      "supports_dmsl": "PARTIAL - attack success is not a verdict oracle (spec §4). No host-authoritative state for D.",
+      "status": "previously acquired in benchmark/corpus_sources; unchanged"
+    },
+    {
+      "name": "AgentGovBench",
+      "url": "https://agenticcontrolplane.com/series/agentgovbench",
+      "commit": null,
+      "license": null,
+      "records": 48,
+      "label_provenance": "vendor-described governance scenarios",
+      "commercial_use": "unknown - no licence located",
+      "supports_dmsl": "UNKNOWN",
+      "status": "NOT ACQUIRED - no open repository or licence located; vendor-operated series. Recorded as unavailable rather than substituted."
+    },
+    {
+      "name": "ToolSafe / TS-Bench",
+      "url": null,
+      "commit": null,
+      "license": null,
+      "records": null,
+      "label_provenance": "n/a",
+      "commercial_use": "n/a",
+      "supports_dmsl": "n/a",
+      "status": "NOT FOUND - no source matching this name located in Phase I.5."
+    },
+    {
+      "name": "CrossMCP-Bench",
+      "url": null,
+      "commit": null,
+      "license": null,
+      "records": null,
+      "label_provenance": "n/a",
+      "commercial_use": "n/a",
+      "supports_dmsl": "n/a",
+      "status": "NOT FOUND - no source matching this name located in Phase I.5."
+    },
+    {
+      "name": "Agent Action Boundary Benchmark",
+      "url": null,
+      "commit": null,
+      "license": null,
+      "records": null,
+      "label_provenance": "n/a",
+      "commercial_use": "n/a",
+      "supports_dmsl": "n/a",
+      "status": "NOT FOUND under this name. Nearest candidates seen in search (agent-action-safety-benchmark, SafeAgentBench) were not verified or acquired."
+    }
+  ],
+  "inclusion_rules": [
+    "All 42 frozen cases are authored, development_only, and externally_sourced=false (invariant 13).",
+    "Every system receives the SAME host-resolved fact set (spec §3).",
+    "A D class requires an explicit fact_basis naming the settling fact (spec §6).",
+    "M and S pre-register ESCALATE; no pre-registered semantics allow a terminal local PASS on them (spec §2)."
+  ],
+  "exclusion_rules": [
+    "No case may be added, removed, reworded, or relabelled after any EdgeGuard output is observed (invariants 5, 6).",
+    "Vendor-published comparator numbers are never mixed into same-machine rankings (spec §3).",
+    "'Prompt injection present', 'attacker intent' and 'attack success' are never treated as equivalent to a correct EdgeGuard verdict (spec §4)."
+  ],
+  "seeds": {
+    "case_order": 0
+  },
+  "environment": {
+    "arch": "aarch64",
+    "os": "macos",
+    "profile": "release"
+  },
+  "timing": {
+    "profile": "release",
+    "warm_cold_separated": true,
+    "scale_points": [
+      1,
+      10,
+      100,
+      1000
+    ],
+    "percentiles": [
+      "p50",
+      "p95",
+      "p99",
+      "max"
+    ],
+    "policy_load_timed_separately": true,
+    "context_construction_timed_separately": true,
+    "network_allowed_in_evaluator_timing": false
+  },
+  "contamination_policy": [
+    "Frozen cases are NOT run against EdgeGuard in Phase I.5 (spec §11).",
+    "Sanity probes use throwaway fixtures only, never a frozen case.",
+    "The gate refuses on any change to a case, a label, a Core PRODUCTION-region hash, a comparator pin, the metric implementation, or the manifest.",
+    "Core test-region edits are visible but do not void results; production-region edits void them."
+  ],
+  "unannotated_cases": 17,
+  "placeholder_burden_cases": 5,
+  "comparators_without_adapter": [
+    "Jataayu",
+    "Microsoft Agent Governance Toolkit"
+  ]
+}
