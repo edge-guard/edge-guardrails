@@ -135,8 +135,19 @@ const RISKY_EXTENSIONS: &[&str] = &[
     ".exe", ".scr", ".msi", ".bat", ".cmd", ".js", ".vbs", ".jar", ".apk", ".iso", ".img", ".lnk", ".ps1", ".hta", ".docm", ".xlsm",
 ];
 
-/// Mail security gateways that rewrite links and scan them on click; the original can't be read from them.
-const SECURITY_WRAPPERS: &[&str] = &["urldefense.com", "urldefense.proofpoint.com", "mimecastprotect.com", "mimecast.com", "cudasvc.com", "barracudanetworks.com"];
+/// Links whose real destination can't be read from them: mail security gateways (they scan on click)
+/// and the click-tracking redirects of email and sales tools, which rewrite every link in a message.
+const OPAQUE_REDIRECTS: &[&str] = &[
+    // security gateways
+    "urldefense.com", "urldefense.proofpoint.com", "mimecastprotect.com", "mimecast.com", "cudasvc.com", "barracudanetworks.com",
+    // click tracking
+    "sendgrid.net", "list-manage.com", "mandrillapp.com", "hubspotlinks.com", "hubspotemail.net", "exacttarget.com", "exct.net",
+    "sparkpostmail.com", "mlsend.com", "sendibt2.com", "sendibt3.com", "acemlna.com", "acemlnb.com", "acemlnc.com", "acemlnd.com",
+    "klclick.com", "klclick1.com", "klclick2.com", "klclick3.com", "rs6.net", "createsend.com", "createsend1.com", "cmail19.com",
+    "cmail20.com", "awstrack.me", "mjt.lu", "pstmrk.it", "intercom-clicks.com", "customeriomail.com", "convertkit-mail.com",
+    "convertkit-mail2.com", "yesware.com", "mixmax.com", "mailtrack.io", "salesloft.com", "outreach.io", "activetrail.com",
+    "activetrail.biz", "inwise.com", "smoove.io", "pulseem.com", "responder.co.il",
+];
 
 /// Top-level domains recognised in a bare address without http:// or www. (not file extensions like .zip).
 const TLDS: &str = "com|net|org|info|biz|io|co|me|app|dev|ai|ly|link|xyz|top|site|online|shop|store|club|live|tech|website|space|click|help|support|services|digital|cloud|email|ru|cn|tk|ml|ga|cf|gq|pw|cc|ws|to|us|uk|de|fr|eu|il";
@@ -193,7 +204,7 @@ impl LinkScanner {
 
     /// An HTML link: where it really goes (through Outlook/Google redirects), what's wrong with that
     /// address, and whether its visible text shows a different one. None for mailto:, tel:, page
-    /// anchors, relative links and links rewritten by a mail security gateway (scanned on click).
+    /// anchors, relative links, and links rewritten by a security gateway or a click-tracking service.
     pub fn check_anchor(&self, href: &str, text: &str) -> Option<Link> {
         let href: String = href.chars().filter(|c| !c.is_whitespace() && !c.is_control()).collect();
         let lower = href.to_ascii_lowercase();
@@ -344,14 +355,14 @@ fn is_lookalike(host: &str, site: &str) -> bool {
 }
 
 /// Follows Outlook Safe Links, Google and Facebook redirects to the real destination. None when a
-/// security gateway wrapped the link (it can't be unwrapped, and the gateway scans it on click).
+/// security gateway or a click-tracking service wrapped the link: its destination can't be read.
 fn unwrap_redirects(href: &str) -> Option<String> {
     let mut url = href.to_string();
     for _ in 0..3 {
         let inner = {
             let Some(parts) = split_url(&url) else { break };
             let site = site_of(&parts.host);
-            if SECURITY_WRAPPERS.iter().any(|w| site == *w || parts.host == *w) {
+            if OPAQUE_REDIRECTS.iter().any(|w| site == *w || parts.host == *w) {
                 return None;
             }
             if parts.host.ends_with("safelinks.protection.outlook.com") {
@@ -570,8 +581,10 @@ mod tests {
         assert_eq!(r(wrapped, "www.leumi.co.il"), Some(0));
         let wrapped_evil = "https://nam12.safelinks.protection.outlook.com/?url=https%3A%2F%2Fleumi-verify.com%2F&data=05";
         assert_eq!(r(wrapped_evil, "www.leumi.co.il"), Some(MISMATCH | LOOKALIKE));
-        // A security gateway's rewritten link can't be read; it's scanned on click.
+        // A security gateway's or a click tracker's rewritten link can't be read.
         assert_eq!(r("https://urldefense.com/v3/__https://x.example__;!!abc", "www.leumi.co.il"), None);
+        assert_eq!(r("https://u123.ct.sendgrid.net/ls/click?upn=abc", "www.mybiz.co.il"), None);
+        assert_eq!(r("https://r.us-east-1.awstrack.me/L0/https:%2F%2Fwww.mybiz.co.il/1/abc", "www.mybiz.co.il"), None);
     }
 
     #[test]

@@ -72,7 +72,7 @@ domain (`site`, for allow-lists) and warning signs; `guard.anchors([{ href, text
 | Sign | Meaning |
 | :--- | :--- |
 | `lookalike` | Imitates a bank, payment app, government site or Microsoft/Google/Apple login (`leumi-verify.com`, `paypa1.com`, `docs.google.com.evil.ru`). Common Hebrew words such as "leumi" don't count under `.il`, and government, municipal and academic domains never do |
-| `mismatch` | The visible text shows one address and the link goes to another. Outlook Safe Links and Google redirects are unwrapped first |
+| `mismatch` | The visible text shows one address and the link goes to another. Outlook Safe Links and Google redirects are unwrapped first; links rewritten by mail security gateways or click-tracking services (SendGrid, HubSpot, Amazon SES...) are left alone, since their destination can't be read |
 | `ip`, `userinfo`, `idn` | A bare IP host, `https://paypal.com@evil.com`, punycode or non-Latin letters |
 | `executable`, `script` | A direct link to a program or macro document; `javascript:` / `data:` links |
 | `shortener` | The destination is hidden (bit.ly...): a weak sign, not a finding on its own |
