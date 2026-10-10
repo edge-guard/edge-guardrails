@@ -217,7 +217,7 @@ impl LinkScanner {
         let target = unwrap_redirects(&href)?;
         let mut link = analyse(&target, 0, 0)?;
         if let Some(shown) = self.find(text).into_iter().next() {
-            if shown.site != link.site {
+            if shown.site != link.site && !same_service(&shown, &link) {
                 link.reasons |= reason::MISMATCH;
             }
         }
@@ -339,6 +339,12 @@ fn is_official(host: &str, site: &str, official: &str) -> bool {
 
 /// Israeli registries open only to government, municipalities, academia and the army.
 const RESTRICTED_IL: &[&str] = &["gov.il", "muni.il", "ac.il", "idf.il", "k12.il"];
+
+/// Two addresses of one service, like we.tl and wetransfer.com or 1drv.ms and onedrive.live.com.
+fn same_service(a: &Link, b: &Link) -> bool {
+    let official = |l: &Link, brand: &Brand| brand.official.iter().any(|o| is_official(&l.host, &l.site, o));
+    BRANDS.iter().any(|brand| official(a, brand) && official(b, brand))
+}
 
 fn is_lookalike(host: &str, site: &str) -> bool {
     if RESTRICTED_IL.iter().any(|r| site == *r || site.ends_with(&format!(".{r}"))) {
@@ -515,6 +521,18 @@ mod tests {
             "https://pineapple-design.co.il",
             "https://wa.me/972501234567",
             "https://www.mybiz.co.il/catalog.pdf",
+            // Large files: transfer services, shared folders, archives and drawings.
+            "https://www.jumbomail.me/he/download?id=abc123",
+            "https://we.tl/t-AbCdEf123",
+            "https://wetransfer.com/downloads/abc/def",
+            "https://www.dropbox.com/scl/fi/abc/plans.zip?rlkey=x&dl=0",
+            "https://1drv.ms/u/s!AbC123",
+            "https://contoso-my.sharepoint.com/:f:/g/personal/x",
+            "https://drive.google.com/file/d/1AbC/view",
+            "https://fromsmash.com/AbC-dE",
+            "https://files.example-builders.co.il/project/plans.zip",
+            "https://example-builders.co.il/a.rar",
+            "https://example-builders.co.il/b.dwg",
         ] {
             assert_eq!(reasons_of(url), 0, "{url}");
         }
@@ -581,6 +599,10 @@ mod tests {
         assert_eq!(r(wrapped, "www.leumi.co.il"), Some(0));
         let wrapped_evil = "https://nam12.safelinks.protection.outlook.com/?url=https%3A%2F%2Fleumi-verify.com%2F&data=05";
         assert_eq!(r(wrapped_evil, "www.leumi.co.il"), Some(MISMATCH | LOOKALIKE));
+        // A service's own short and long addresses are one site; another site behind its name isn't.
+        assert_eq!(r("https://we.tl/t-AbCdEf123", "https://wetransfer.com/downloads/abc"), Some(0));
+        assert_eq!(r("https://onedrive.live.com/redir?resid=x", "https://1drv.ms/u/s!AbC"), Some(0));
+        assert_eq!(r("https://evil.example/files", "https://www.dropbox.com/scl/fi/abc"), Some(MISMATCH));
         // A security gateway's or a click tracker's rewritten link can't be read.
         assert_eq!(r("https://urldefense.com/v3/__https://x.example__;!!abc", "www.leumi.co.il"), None);
         assert_eq!(r("https://u123.ct.sendgrid.net/ls/click?upn=abc", "www.mybiz.co.il"), None);
