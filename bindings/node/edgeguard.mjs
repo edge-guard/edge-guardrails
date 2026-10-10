@@ -21,9 +21,14 @@ export const Category = Object.freeze({
   /** API keys, tokens, private keys, "password: ...". */
   SECRET: 64,
   CUSTOM: 128,
+  /** Links with strong signs of phishing: look-alike domains, IP hosts, "user@host", punycode, program downloads. */
+  LINK: 256,
   /** Everything redact() can replace. */
   DATA: 4 | 8 | 16 | 32 | 64,
 });
+
+/** Warning signs on a link; everything but "shortener" is strong enough to warn about. */
+export const STRONG_REASONS = Object.freeze(["lookalike", "ip", "userinfo", "idn", "executable", "script", "mismatch"]);
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -32,6 +37,11 @@ const decoder = new TextDecoder();
  * @typedef {{ code: number, category: string, start: number, end: number }} Finding
  * `start`/`end` are string indices (UTF-16, like String.prototype.slice). Injection findings
  * have an empty range: they flag the text, there is nothing to cut out.
+ *
+ * @typedef {{ start: number, end: number, host: string, site: string, reasons: string[] }} Link
+ * `site` is the registrable domain ("leumi.co.il" for "www.leumi.co.il"), what an allow-list compares.
+ *
+ * @typedef {{ index: number, host: string, site: string, reasons: string[] }} AnchorVerdict
  */
 
 export class EdgeGuard {
@@ -65,6 +75,30 @@ export class EdgeGuard {
   }
 
   /**
+   * Every link in plain text (with or without http://), with its warning signs.
+   * @param {string} text
+   * @returns {Link[]}
+   */
+  links(text) {
+    const bytes = encoder.encode(text);
+    const links = JSON.parse(this.#call("eg_links", bytes, 0) || "[]");
+    const index = utf16Index(bytes, links.flatMap((l) => [l.start, l.end]));
+    return links.map((l) => ({ ...l, start: index.get(l.start), end: index.get(l.end) }));
+  }
+
+  /**
+   * HTML links (href and visible text): the suspicious ones, through Outlook/Google redirects,
+   * including text that shows one address while the link goes to another.
+   * @param {{ href: string, text: string }[]} anchors
+   * @returns {AnchorVerdict[]}
+   */
+  anchors(anchors) {
+    const clean = (s) => String(s).replace(/[\t\r\n]+/g, " ");
+    const input = anchors.map((a) => `${clean(a.href)}\t${clean(a.text)}`).join("\n");
+    return JSON.parse(this.#call("eg_anchors", encoder.encode(input), 0) || "[]").map(({ i, ...rest }) => ({ index: i, ...rest }));
+  }
+
+  /**
    * The text with data in the given categories replaced by placeholders ([CARD], [ID], [IBAN],
    * [SECRET], [EMAIL]).
    * @param {string} text
@@ -79,7 +113,7 @@ export class EdgeGuard {
     try {
       const ptr = wasm.eg_alloc(bytes.length);
       new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
-      const packed = wasm[fn](ptr, bytes.length, categories);
+      const packed = fn === "eg_links" || fn === "eg_anchors" ? wasm[fn](ptr, bytes.length) : wasm[fn](ptr, bytes.length, categories);
       wasm.eg_free(ptr, bytes.length);
       const out = Number(packed >> 32n);
       const len = Number(packed & 0xffffffffn);

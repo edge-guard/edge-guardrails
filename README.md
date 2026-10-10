@@ -62,6 +62,20 @@ Loading takes a few milliseconds and a 5 KB email scans in about half a millisec
 | `IBAN` | Israeli IBANs that pass the mod-97 check |
 | `SECRET` | AWS, Anthropic, OpenAI, GitHub, Stripe, Slack and Google keys, private keys, "password: ..." |
 | `EMAIL` | Email addresses |
+| `LINK` | Links with strong signs of phishing (reported as `suspicious_link`), see below |
+
+### Links (no network lookups)
+
+`guard.links(text)` returns every link in plain text, with or without `http://`, with its registrable
+domain (`site`, for allow-lists) and warning signs; `guard.anchors([{ href, text }])` checks HTML links.
+
+| Sign | Meaning |
+| :--- | :--- |
+| `lookalike` | Imitates a bank, payment app, government site or Microsoft/Google/Apple login (`leumi-verify.com`, `paypa1.com`, `docs.google.com.evil.ru`). Common Hebrew words such as "leumi" don't count under `.il`, and government, municipal and academic domains never do |
+| `mismatch` | The visible text shows one address and the link goes to another. Outlook Safe Links and Google redirects are unwrapped first |
+| `ip`, `userinfo`, `idn` | A bare IP host, `https://paypal.com@evil.com`, punycode or non-Latin letters |
+| `executable`, `script` | A direct link to a program or macro document; `javascript:` / `data:` links |
+| `shortener` | The destination is hidden (bit.ly...): a weak sign, not a finding on its own |
 
 ## License
 MIT

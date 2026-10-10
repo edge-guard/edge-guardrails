@@ -1,3 +1,5 @@
+pub mod links;
+
 use aho_corasick::{AhoCorasick, MatchKind};
 use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
@@ -127,6 +129,9 @@ pub mod category {
     pub const SECRET: u32 = 64;
     /// The engine's custom patterns.
     pub const CUSTOM: u32 = 128;
+    /// Links with strong signs of phishing (see `links::reason`): look-alike domains, IP hosts,
+    /// "user@host" tricks, punycode, direct program downloads.
+    pub const LINK: u32 = 256;
 
     /// Personal and financial data, and secrets: what redact() replaces.
     pub const DATA: u32 = EMAIL | CREDIT_CARD | IL_ID | IBAN | SECRET;
@@ -181,6 +186,7 @@ pub struct SecurityEngine {
     id_keyword_re: Regex,
     iban_re: Regex,
     secret_res: Vec<Regex>,
+    link_scanner: links::LinkScanner,
 }
 
 #[derive(Debug, Clone)]
@@ -240,7 +246,21 @@ impl SecurityEngine {
         .map(|p| Regex::new(p).unwrap())
         .collect();
 
-        SecurityEngine { ac, custom_ac, logger, email_re, aws_re, strict_ac, digit_run_re, digits_re, id_re, id_keyword_re, iban_re, secret_res }
+        SecurityEngine {
+            ac,
+            custom_ac,
+            logger,
+            email_re,
+            aws_re,
+            strict_ac,
+            digit_run_re,
+            digits_re,
+            id_re,
+            id_keyword_re,
+            iban_re,
+            secret_res,
+            link_scanner: links::LinkScanner::new(),
+        }
     }
 
     fn check_luhn(number: &str) -> bool {
@@ -470,7 +490,30 @@ impl SecurityEngine {
                 found.push(Finding { code: 303, category: "email", start: m.start(), end: m.end() });
             }
         }
+        if categories & LINK != 0 {
+            for l in self.link_scanner.find(text) {
+                if l.reasons & links::reason::STRONG != 0 {
+                    found.push(Finding { code: 401, category: "suspicious_link", start: l.start, end: l.end });
+                }
+            }
+        }
         found
+    }
+
+    /// Every link in the text with its host, registrable domain and warning signs (see `links`).
+    pub fn links(&self, text: &str) -> Vec<links::Link> {
+        if text.len() > MAX_SCAN_BYTES {
+            return Vec::new();
+        }
+        self.link_scanner.find(text)
+    }
+
+    /// HTML links as lines of "href<TAB>visible text" → JSON for the suspicious ones (see `links`).
+    pub fn anchors_json(&self, input: &str) -> String {
+        if input.len() > MAX_SCAN_BYTES {
+            return "[]".to_string();
+        }
+        self.link_scanner.anchors_json(input)
     }
 
     /// Replaces personal/financial data and secrets in the chosen categories with placeholders
@@ -618,6 +661,18 @@ mod wasm_api {
     #[no_mangle]
     pub extern "C" fn eg_redact(ptr: *const u8, len: usize, categories: u32) -> u64 {
         hand_over(engine().redact(input(ptr, len), categories))
+    }
+
+    /// JSON array of every link in the text: position, host, registrable domain, warning signs.
+    #[no_mangle]
+    pub extern "C" fn eg_links(ptr: *const u8, len: usize) -> u64 {
+        hand_over(links::links_json(&engine().links(input(ptr, len))))
+    }
+
+    /// HTML links as lines of "href<TAB>visible text" → JSON for the suspicious ones, by line index.
+    #[no_mangle]
+    pub extern "C" fn eg_anchors(ptr: *const u8, len: usize) -> u64 {
+        hand_over(engine().anchors_json(input(ptr, len)))
     }
 }
 
@@ -783,6 +838,18 @@ mod tests {
         let text = "דנה, ת.ז. 000000018, כרטיס 4111 1111 1111 1111, מייל dana@acme.co.il";
         assert_eq!(e.redact(text, CREDIT_CARD | IL_ID), "דנה, ת.ז. [ID], כרטיס [CARD], מייל dana@acme.co.il");
         assert_eq!(e.sanitize("card 4111111111111111"), "card [CARD]");
+    }
+
+    #[test]
+    fn suspicious_links_through_scan_all() {
+        let e = engine();
+        let text = "Your account is locked: https://leumi-verify.com/login or call us. Our site: https://www.mybiz.co.il";
+        let f = e.scan_all(text, LINK);
+        assert_eq!(cats(&f), vec!["suspicious_link"]);
+        assert_eq!(&text[f[0].start..f[0].end], "https://leumi-verify.com/login");
+        // A shortener alone isn't a finding, and links aren't part of DATA (nothing is redacted).
+        assert!(e.scan_all("see https://bit.ly/abc", LINK).is_empty());
+        assert_eq!(e.redact(text, DATA | LINK), text);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { Category, EdgeGuard } from "./edgeguard.mjs";
+import { Category, EdgeGuard, STRONG_REASONS } from "./edgeguard.mjs";
 
 const wasm = process.env.EDGEGUARD_WASM ?? fileURLToPath(new URL("../../target/wasm32-unknown-unknown/wasm/edgeguard.wasm", import.meta.url));
 const guard = EdgeGuard.fromFile(wasm);
@@ -32,4 +32,28 @@ test("empty text, oversized text and repeated calls", () => {
   const before = guard.instance.exports.memory.buffer.byteLength;
   for (let i = 0; i < 5000; i++) guard.redact(`כרטיס 4111 1111 1111 1111 מספר ${i}`);
   assert.equal(guard.instance.exports.memory.buffer.byteLength, before, "no memory growth: results are freed");
+});
+
+test("links with string indices and warning signs", () => {
+  const text = "שלום 👋 החשבון ננעל: https://leumi-verify.com/login · האתר שלנו www.mybiz.co.il · dana@acme.co.il";
+  const links = guard.links(text);
+  assert.deepEqual(links.map((l) => [text.slice(l.start, l.end), l.site, l.reasons]), [
+    ["https://leumi-verify.com/login", "leumi-verify.com", ["lookalike"]],
+    ["www.mybiz.co.il", "mybiz.co.il", []],
+  ]);
+  assert.deepEqual(guard.scan(text, Category.LINK).map((f) => f.category), ["suspicious_link"]);
+  assert.ok(!STRONG_REASONS.includes("shortener"));
+});
+
+test("HTML links: text that shows another address, through Outlook Safe Links", () => {
+  const verdicts = guard.anchors([
+    { href: "https://www.mybiz.co.il", text: "האתר שלנו" },
+    { href: "https://evil.example/x", text: "www.leumi.co.il" },
+    { href: "https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwww.leumi.co.il%2F&data=x", text: "www.leumi.co.il" },
+    { href: "javascript:alert(1)", text: "click\tme" },
+  ]);
+  assert.deepEqual(verdicts, [
+    { index: 1, host: "evil.example", site: "evil.example", reasons: ["mismatch"] },
+    { index: 3, host: "", site: "", reasons: ["script"] },
+  ]);
 });
